@@ -1,7 +1,7 @@
 const INITIAL_PROMPT = `Actúa como @remote desktop commander conectado a mi ordenador mediante GottaRemoteMCP.
 IMPORTANTE: No uses tu navegador web integrado ni curl desde tu sandbox. Mi navegador tiene activo el puente automático GottaRemoteMCP que lee tus respuestas y las ejecuta en mi PC.
 
-Cada vez que quieras ejecutar un comando en terminal, abrir programas gráficos, leer/escribir/editar un archivo, listar directorios o controlar el escritorio, responde con un objeto JSON válido que contenga la clave "action" (preferiblemente dentro de un bloque de código \`\`\`json). Mi puente lo ejecutará automáticamente en mi PC y te enviará la salida en el siguiente mensaje.
+Cada vez que quieras ejecutar un comando en terminal, abrir programas gráficos, leer/escribir/editar un archivo, listar directorios o controlar el escritorio, responde con un bloque de código \`\`\`gotta (o \`\`\`json) con un objeto JSON válido que contenga la clave "action". Mi puente lo ejecutará automáticamente en mi PC y te enviará la salida en el siguiente mensaje.
 
 Formato de objetos JSON soportados:
 - Ejecutar comando bash (mantiene cwd): {"action": "exec", "cmd": "COMANDO_A_EJECUTAR"}
@@ -13,7 +13,7 @@ Formato de objetos JSON soportados:
 - Sesiones/Procesos: {"action": "sessions"} | {"action": "session-output", "pid": 123} | {"action": "kill", "pid": 123}
 - Escritorio (ratón/teclado): {"action": "input", "type": "click", "x": 500, "y": 300}
 
-Para verificar la conexión ahora mismo, responde únicamente con un JSON que ejecute el comando: pwd && whoami && uname -a`;
+Para verificar la conexión ahora mismo, responde únicamente con un bloque JSON que ejecute el comando: pwd && whoami && uname -a`;
 
 const VALID_ACTIONS = new Set([
   "exec",
@@ -30,9 +30,13 @@ const VALID_ACTIONS = new Set([
   "screen",
 ]);
 
+// Ignorar los ejemplos literales del propio prompt de instrucciones
+const IGNORED_EXAMPLE_CMDS = new Set(["pwd && ls -la", "COMANDO_A_EJECUTAR"]);
+
 let currentEndpoint = "";
 let autoRun = true;
 let isMinimized = false;
+let isExecuting = false;
 const executedHashes = new Set();
 
 function setLog(text, color = "#d1d5db") {
@@ -52,7 +56,7 @@ function updateWidgetInput() {
 
 /**
  * Extrae todos los objetos JSON válidos con {"action": ...} desde cualquier texto
- * (incluso si ChatGPT lo escribe en texto plano sin bloque de código o entre comillas).
+ * (tanto dentro de cajas </> gotta / CodeMirror / pre / code como en texto plano).
  */
 function extractGottaObjectsFromText(rawText) {
   const results = [];
@@ -87,12 +91,19 @@ function extractGottaObjectsFromText(rawText) {
             if (candidate.includes('"action"')) {
               try {
                 const parsed = JSON.parse(candidate);
-                if (parsed && typeof parsed === "object" && VALID_ACTIONS.has(parsed.action)) {
+                if (
+                  parsed &&
+                  typeof parsed === "object" &&
+                  VALID_ACTIONS.has(parsed.action) &&
+                  !IGNORED_EXAMPLE_CMDS.has(parsed.cmd) &&
+                  parsed.path !== "RUTA" &&
+                  parsed.path !== "/ruta/archivo"
+                ) {
                   results.push({ raw: candidate, parsed });
                   start = i;
                 }
               } catch {
-                // No era JSON válido en este nivel
+                // Ignorar si no es JSON válido
               }
             }
             break;
@@ -104,25 +115,37 @@ function extractGottaObjectsFromText(rawText) {
   return results;
 }
 
-function findAssistantMessages() {
-  // Selectores específicos de mensajes del asistente en ChatGPT y Gemini
-  const chatgptMsgs = Array.from(
-    document.querySelectorAll('[data-message-author-role="assistant"]')
-  );
-  if (chatgptMsgs.length > 0) return chatgptMsgs;
+function isUserElement(el) {
+  if (!el) return false;
+  if (
+    el.closest('[data-message-author-role="user"]') ||
+    el.closest(".user-query") ||
+    el.closest("user-query") ||
+    el.closest("#gotta-remote-ext-widget") ||
+    el.closest("form")
+  ) {
+    return true;
+  }
+  const article = el.closest("article");
+  if (article && article.querySelector('[data-message-author-role="user"]')) {
+    // Si el article solo tiene mensaje de usuario y no de assistant
+    if (!article.querySelector('[data-message-author-role="assistant"]')) {
+      return true;
+    }
+  }
+  return false;
+}
 
-  const geminiMsgs = Array.from(
-    document.querySelectorAll("model-response, .model-response-text, message-content")
+/**
+ * Busca todos los contenedores de respuesta o bloques de código del asistente en la página.
+ */
+function findCandidateBlocks() {
+  const candidates = Array.from(
+    document.querySelectorAll(
+      '[data-message-author-role="assistant"], pre, code, .cm-content, model-response, .model-response-text, article'
+    )
   );
-  if (geminiMsgs.length > 0) return geminiMsgs;
-
-  // Fallback general excluyendo mensajes del usuario y nuestro propio widget
-  return Array.from(document.querySelectorAll("article, .markdown")).filter(
-    (el) =>
-      !el.closest("#gotta-remote-ext-widget") &&
-      !el.querySelector('[data-message-author-role="user"]') &&
-      !el.closest('[data-message-author-role="user"]')
-  );
+  return candidates.filter((el) => !isUserElement(el));
 }
 
 function findChatEditor() {
@@ -140,8 +163,9 @@ function findSendButton() {
     document.querySelector('[data-testid="send-button"]') ||
     document.querySelector('[data-testid="fruitjuice-send-button"]') ||
     document.querySelector("button.send-button") ||
-    document.querySelector('button[aria-label*="Send"]') ||
-    document.querySelector('button[aria-label*="Enviar"]')
+    document.querySelector('form button[aria-label="Send prompt"]') ||
+    document.querySelector('form button[aria-label="Enviar prompt"]') ||
+    document.querySelector('form button[aria-label="Enviar mensaje"]')
   );
 }
 
@@ -173,38 +197,55 @@ function sendTextToChat(text) {
     }
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
+    // Seleccionar todo el contenido actual del editor ProseMirror / Quill e insertar con execCommand
     const sel = window.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editor);
     sel.removeAllRanges();
     sel.addRange(range);
 
-    let inserted = false;
+    let ok = false;
     try {
-      const dt = new DataTransfer();
-      dt.setData("text/plain", text);
-      const pasteEvent = new ClipboardEvent("paste", {
-        bubbles: true,
-        cancelable: true,
-        clipboardData: dt,
-      });
-      editor.dispatchEvent(pasteEvent);
-      if ((editor.textContent || "").trim().length > 5) {
-        inserted = true;
-      }
+      ok = document.execCommand("insertText", false, text);
     } catch {}
 
-    if (!inserted) {
-      document.execCommand("insertText", false, text);
+    if (!ok || (editor.textContent || "").trim().length < 3) {
+      try {
+        const dt = new DataTransfer();
+        dt.setData("text/plain", text);
+        const pasteEvent = new ClipboardEvent("paste", {
+          bubbles: true,
+          cancelable: true,
+          clipboardData: dt,
+        });
+        editor.dispatchEvent(pasteEvent);
+      } catch {}
     }
-    editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
+
+    if ((editor.textContent || "").trim().length < 3) {
+      editor.innerHTML =
+        "<p>" +
+        text
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/\n/g, "</p><p>") +
+        "</p>";
+      editor.dispatchEvent(new InputEvent("input", { bubbles: true, data: text }));
+    }
   }
 
-  setTimeout(() => {
+  // Intentar pulsar el botón de envío tras habilitarse en React/ProseMirror
+  let attempts = 0;
+  const tryClickSend = () => {
+    attempts++;
     const btn = findSendButton();
     if (btn && !btn.disabled) {
       btn.click();
-      setLog("✅ Enviado al chat. Esperando respuesta de la IA...", "#10b981");
+      setLog("✅ Respuesta enviada al chat automáticamente.", "#10b981");
+      return;
+    }
+    if (attempts < 4) {
+      setTimeout(tryClickSend, 250);
     } else {
       editor.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -215,27 +256,18 @@ function sendTextToChat(text) {
           bubbles: true,
         })
       );
-      setLog("✅ Texto insertado en el chat (si no se envió solo, pulsa Enter).", "#10b981");
+      setLog("✅ Respuesta insertada en la caja del chat (pulsa Enter si no salió).", "#10b981");
     }
-  }, 450);
+  };
+  setTimeout(tryClickSend, 250);
 
   return true;
 }
 
-function getCleanMessageText(msgEl) {
-  const clone = msgEl.cloneNode(true);
+function getCleanElementText(el) {
+  const clone = el.cloneNode(true);
   clone.querySelectorAll(".gotta-exec-badge").forEach((b) => b.remove());
   return (clone.textContent || "").trim();
-}
-
-function markExistingMessagesAsSeen() {
-  const msgs = findAssistantMessages();
-  msgs.forEach((msgEl, msgIdx) => {
-    const objs = extractGottaObjectsFromText(getCleanMessageText(msgEl));
-    objs.forEach((item, itemIdx) => {
-      executedHashes.add(`${msgIdx}_${itemIdx}_${item.raw}`);
-    });
-  });
 }
 
 function pingServer(callback) {
@@ -266,15 +298,19 @@ function pingServer(callback) {
   );
 }
 
-function executeGottaPayload(msgEl, parsed) {
+function executeGottaPayload(targetEl, parsed, rawJson) {
+  if (isExecuting) return;
+  isExecuting = true;
+
   const summary = String(
     parsed.cmd || parsed.command || parsed.path || parsed.q || parsed.action
-  ).slice(0, 50);
+  ).slice(0, 55);
   setLog(`⚡ Ejecutando en PC: ${summary}...`, "#fbbf24");
 
   chrome.runtime.sendMessage(
     { type: "GOTTA_EXEC", endpoint: currentEndpoint, payload: parsed },
     (resp) => {
+      isExecuting = false;
       if (!resp || !resp.ok) {
         const errMsg = resp?.error || "Error de conexión con GottaRemoteMCP";
         setLog(`❌ Error: ${errMsg}`, "#f87171");
@@ -287,13 +323,14 @@ function executeGottaPayload(msgEl, parsed) {
         updateWidgetInput();
       }
 
-      if (msgEl && !msgEl.querySelector(".gotta-exec-badge")) {
+      const container = targetEl?.closest("article") || targetEl;
+      if (container && !container.querySelector(".gotta-exec-badge")) {
         const badge = document.createElement("div");
         badge.className = "gotta-exec-badge";
         badge.style.cssText =
           "background:#064e3b;color:#a7f3d0;font-size:11px;padding:5px 10px;border-radius:6px;margin-top:8px;display:inline-block;font-family:monospace;border:1px solid #10b981;";
         badge.textContent = `✅ Ejecutado en tu PC por GottaRemoteMCP (${parsed.action}: ${summary})`;
-        msgEl.appendChild(badge);
+        container.appendChild(badge);
       }
 
       setLog(`✅ Ejecutado (${summary}). Enviando salida al chat...`, "#10b981");
@@ -344,7 +381,10 @@ function makeWidgetDraggable(box, handle) {
     if (!isDragging) return;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
-    const newLeft = Math.max(4, Math.min(window.innerWidth - box.offsetWidth - 4, initialLeft + dx));
+    const newLeft = Math.max(
+      4,
+      Math.min(window.innerWidth - box.offsetWidth - 4, initialLeft + dx)
+    );
     const newTop = Math.max(4, Math.min(window.innerHeight - 40, initialTop + dy));
     box.style.left = newLeft + "px";
     box.style.top = newTop + "px";
@@ -360,6 +400,25 @@ function makeWidgetDraggable(box, handle) {
   });
 }
 
+function scanAllPageForGottaObjects() {
+  const allFound = [];
+  const seenRaws = new Set();
+  const blocks = findCandidateBlocks();
+
+  for (const el of blocks) {
+    const txt = getCleanElementText(el);
+    if (!txt.includes('"action"')) continue;
+    const objs = extractGottaObjectsFromText(txt);
+    for (const obj of objs) {
+      if (!seenRaws.has(obj.raw)) {
+        seenRaws.add(obj.raw);
+        allFound.push({ el, ...obj });
+      }
+    }
+  }
+  return allFound;
+}
+
 function mountWidget() {
   if (document.getElementById("gotta-remote-ext-widget")) return;
   const box = document.createElement("div");
@@ -367,7 +426,7 @@ function mountWidget() {
   box.style.cssText =
     "position:fixed;top:16px;right:18px;z-index:999999;background:#111827;color:#f9fafb;padding:10px 12px;border-radius:12px;border:1px solid #10b981;font-family:system-ui,sans-serif;font-size:12px;box-shadow:0 10px 25px rgba(0,0,0,0.55);display:flex;flex-direction:column;gap:7px;width:290px;user-select:none;";
   box.innerHTML = `
-    <div id="gotta-drag-handle" title="Arrastra para mover este cuadro por la pantalla" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:move;padding-bottom:4px;border-bottom:1px solid #1f2937;">
+    <div id="gotta-drag-handle" title="Arrastra desde aquí para mover el cuadro" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:move;padding-bottom:4px;border-bottom:1px solid #1f2937;">
       <span style="font-weight:700;color:#10b981;display:flex;align-items:center;gap:5px;">
         ⠿ 🟢 GottaRemoteMCP
       </span>
@@ -394,7 +453,7 @@ function mountWidget() {
         <button id="gotta-ext-init-btn" style="flex:1;background:#10b981;color:#06281e;border:none;border-radius:6px;padding:7px 8px;font-weight:700;font-size:11px;cursor:pointer;">
           🚀 Conectar Chat
         </button>
-        <button id="gotta-ext-runlast-btn" title="Ejecutar manualmente el último JSON que haya escrito la IA en el chat" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:7px 8px;font-weight:600;font-size:11px;cursor:pointer;white-space:nowrap;">
+        <button id="gotta-ext-runlast-btn" title="Ejecutar ahora mismo el último comando JSON que aparece en el chat" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:7px 8px;font-weight:600;font-size:11px;cursor:pointer;white-space:nowrap;">
           ▶️ Ejecutar último
         </button>
       </div>
@@ -435,7 +494,8 @@ function mountWidget() {
   });
 
   document.getElementById("gotta-ext-init-btn").addEventListener("click", () => {
-    markExistingMessagesAsSeen();
+    const existing = scanAllPageForGottaObjects();
+    existing.forEach((item) => executedHashes.add(item.raw));
     pingServer((ok) => {
       if (!ok) return;
       setLog("📨 Insertando prompt en el chat...", "#60a5fa");
@@ -444,16 +504,14 @@ function mountWidget() {
   });
 
   document.getElementById("gotta-ext-runlast-btn").addEventListener("click", () => {
-    const msgs = findAssistantMessages();
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const objs = extractGottaObjectsFromText(getCleanMessageText(msgs[i]));
-      if (objs.length > 0) {
-        const lastObj = objs[objs.length - 1];
-        executeGottaPayload(msgs[i], lastObj.parsed);
-        return;
-      }
+    const found = scanAllPageForGottaObjects();
+    if (found.length > 0) {
+      const last = found[found.length - 1];
+      executedHashes.add(last.raw);
+      executeGottaPayload(last.el, last.parsed, last.raw);
+      return;
     }
-    setLog("⚠️ No se encontró ningún comando JSON en las respuestas de la IA.", "#fbbf24");
+    setLog("⚠️ No se encontró ningún comando JSON en la página.", "#fbbf24");
   });
 
   setTimeout(() => pingServer(), 400);
@@ -473,29 +531,26 @@ chrome.storage.onChanged.addListener((changes) => {
   }
 });
 
+function isAssistantStreaming() {
+  const stopBtn = document.querySelector('[data-testid="stop-button"]');
+  if (stopBtn && stopBtn.offsetParent !== null) return true;
+  if (document.querySelector(".result-streaming")) return true;
+  return false;
+}
+
 setInterval(() => {
   mountWidget();
-  if (!autoRun || !currentEndpoint) return;
+  if (!autoRun || !currentEndpoint || isExecuting) return;
+  if (isAssistantStreaming()) return;
 
-  const isGenerating = document.querySelector(
-    '[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="Detener"], .result-streaming'
-  );
-  if (isGenerating) return;
+  const found = scanAllPageForGottaObjects();
+  if (found.length === 0) return;
 
-  const msgs = findAssistantMessages();
-  for (let msgIdx = 0; msgIdx < msgs.length; msgIdx++) {
-    const msgEl = msgs[msgIdx];
-    const cleanText = getCleanMessageText(msgEl);
-    if (!cleanText.includes('"action"')) continue;
-
-    const extracted = extractGottaObjectsFromText(cleanText);
-    for (let itemIdx = 0; itemIdx < extracted.length; itemIdx++) {
-      const { raw, parsed } = extracted[itemIdx];
-      const hash = `${msgIdx}_${itemIdx}_${raw}`;
-      if (executedHashes.has(hash)) continue;
-
-      executedHashes.add(hash);
-      executeGottaPayload(msgEl, parsed);
-    }
+  // Ejecutar cualquier comando nuevo que no haya sido ejecutado aún en esta sesión
+  const last = found[found.length - 1];
+  if (!executedHashes.has(last.raw)) {
+    // Marcar los anteriores como vistos para ejecutar solo el último turno pendiente
+    found.forEach((item) => executedHashes.add(item.raw));
+    executeGottaPayload(last.el, last.parsed, last.raw);
   }
-}, 1000);
+}, 900);
