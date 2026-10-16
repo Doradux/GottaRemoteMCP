@@ -1,82 +1,49 @@
 # GottaRemoteMCP
 
-**Remote Desktop Commander** híbrido (**MCP Stdio / SSE + API REST OpenAPI 3.1**) compatible con **Gemini** y **ChatGPT**, diseñado para funcionar **sin verificación de cuenta ni flujos OAuth**: basta con pasar tu `AUTH_SECRET` estático y/o credenciales SSH directas para que el agente tome control del ordenador remoto.
+**Remote Desktop Commander sin API Keys**: ejecuta el script en `bash`, copia las credenciales que genera en pantalla y pégalas directamente en **cualquier chat normal de ChatGPT o Gemini** (sin pagar API de OpenAI/Google, sin configurar OAuth ni verificar cuentas).
 
 ---
 
-## Características Principales
+## Cómo funciona (Modo Sin API desde un Chat Normal)
 
-- **Doble protocolo simultáneo**:
-  - **MCP (Model Context Protocol)** por `stdio` y por `HTTP SSE` (`/mcp/sse`) para Gemini CLI, Antigravity, ChatGPT Desktop y clientes MCP.
-  - **REST + OpenAPI 3.1 autogenerado** (`/openapi.json`) para conectar en 1 clic con **ChatGPT Custom GPT Actions** o **Gemini Function Calling / Extensions**.
-- **Dos modos de operación sin fricción**:
-  1. **Modo Agente Local (Daemon)**: Corre directamente en la máquina a controlar.
-  2. **Modo Puente SSH / SFTP (Sin instalar nada en el remoto)**: Pasa `host`, `port`, `username` y `password` (o `privateKey`) en `.env` o directamente en cada llamada de herramienta.
-- **Control de Escritorio Multiplataforma (Zero-Dependency en Windows)**:
-  - **Linux (X11 y Wayland)**: Soporte automático para `xdotool`, `ydotool`, `wtype`, `grim`, `scrot`, `gnome-screenshot` e `import`.
-  - **Windows**: Ejecución nativa mediante PowerShell `.NET` (`user32.dll` + `System.Windows.Forms` + `CopyFromScreen`) sin instalar binarios extra.
-  - **macOS**: Soporte para `screencapture`, `osascript` y `cliclick`.
-- **Túnel Público Instantáneo (`--tunnel`)**:
-  - Integra **Cloudflare Quick Tunnels** (`trycloudflare.com`) sin necesidad de cuenta ni abrir puertos en el router. Descarga el binario automáticamente si no está instalado.
+1. Ejecutas en tu terminal Linux/macOS/Windows:
+   ```bash
+   ./gotta-remote.sh
+   ```
+2. El programa:
+   - Levanta el motor **Desktop Commander** en tu PC (terminal con directorio `cwd` persistente, procesos en segundo plano, lectura/escritura/edición quirúrgica de archivos, búsqueda de código, control de ratón/teclado y capturas de pantalla).
+   - Abre automáticamente un túnel HTTPS gratuito (`trycloudflare.com`, sin cuenta).
+   - Genera unas credenciales únicas (`Usuario` y `Clave`) y te imprime en la terminal un **bloque listo para copiar y pegar**.
+3. Pegas ese bloque en **un chat normal de ChatGPT o Gemini** y el modelo ya puede controlar tu ordenador inmediatamente visitando los enlaces de comando (`/c/<usuario>/<clave>/...`) con su lector web integrado o mediante `curl`/MCP si el entorno tiene terminal.
 
 ---
 
-## Herramientas Disponibles (MCP & OpenAPI)
+## Capacidades estilo `@remote desktop commander`
 
-| Herramienta | Endpoint REST | Descripción |
+| Acción en Chat Normal (`GET` / Navegador del Chat) | Herramienta MCP | Función |
 | :--- | :--- | :--- |
-| `execute_command` | `POST /api/execute` | Ejecuta comandos shell/bash/powershell en local o vía SSH directo. |
-| `take_screenshot` | `GET /api/screenshot` | Captura la pantalla actual (local o remota por SSH) y la devuelve en Base64. |
-| `input_action` | `POST /api/input` | Ratón y teclado: `click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `type`, `key`. |
-| `read_file` | `POST /api/files/read` | Lee archivos locales o remotos vía SFTP/SSH. |
-| `write_file` | `POST /api/files/write` | Crea o sobrescribe archivos locales o remotos vía SFTP/SSH. |
-| `list_directory` | `POST /api/files/list` | Lista archivos y tamaños de cualquier carpeta local o SFTP/SSH. |
-| `list_processes` | `GET /api/processes` | Lista los procesos en ejecución con mayor consumo de CPU/RAM. |
-| `system_status` | `GET /api/status` | Devuelve estado de CPU, RAM, SO, carga y uptime. |
+| `/c/<user>/<pass>/exec?cmd=...` | `execute_command` | Ejecuta comandos manteniendo `cwd` (`cd` persiste) y pasa procesos largos a segundo plano con su `PID`. |
+| `/c/<user>/<pass>/session-output?pid=...` | `read_session_output` | Lee la salida en vivo de un comando o servidor que sigue corriendo en segundo plano. |
+| `/c/<user>/<pass>/kill?pid=...` | `kill_process` | Detiene una sesión activa o mata un proceso por `PID`. |
+| `/c/<user>/<pass>/read?path=...&start=1&end=200` | `read_file` | Lee archivos numerando las líneas y permitiendo rangos (`start` / `end`). |
+| `/c/<user>/<pass>/write?path=...&content=...` | `write_file` | Crea o sobrescribe archivos (soporta texto plano, Base64 `?b64=` y modo `?append=1`). |
+| `/c/<user>/<pass>/edit?path=...&search=...&replace=...` | `edit_block` | Edición quirúrgica de un bloque de código sin reescribir el archivo entero. |
+| `/c/<user>/<pass>/search?q=...&path=.` | `search_code` | Busca texto o expresiones regulares en el código con `ripgrep` / `grep`. |
+| `/c/<user>/<pass>/ls?path=.` | `list_directory` | Lista archivos, carpetas y tamaños. |
+| `/c/<user>/<pass>/input?action=click&x=500&y=300` | `input_action` | Ratón y teclado multiplataforma (`click`, `double_click`, `right_click`, `move`, `drag`, `scroll`, `type`, `key`). |
+| `/c/<user>/<pass>/screen` | `take_screenshot` | Muestra y devuelve captura de pantalla en tiempo real del escritorio. |
 
 ---
 
-## Instalación y Uso Rápido
+## Uso Rápido
 
 ```bash
-git clone https://github.com/Doradux/GottaRemoteMCP.git
-cd GottaRemoteMCP
-npm install
-npm run build
+cd ~/GottaRemoteMCP
+./gotta-remote.sh
 ```
 
-### 1. Arrancar con Túnel Público Instantáneo (Para ChatGPT Actions y Gemini Web/API)
+Si quieres fijar tú mismo el usuario y contraseña en vez de que se generen aleatoriamente en cada arranque:
 
 ```bash
-AUTH_SECRET=mi-clave-secreta npm run start:tunnel
+CHAT_USER=marcos CHAT_PASS=mi_clave_1234 ./gotta-remote.sh
 ```
-
-Esto mostrará en consola tu URL pública instantánea:
-- **OpenAPI Spec URL**: `https://xxxx.trycloudflare.com/openapi.json`
-- **MCP SSE URL**: `https://xxxx.trycloudflare.com/mcp/sse`
-- **Bearer Token**: `mi-clave-secreta`
-
-En **ChatGPT (Custom GPT -> Actions)**:
-1. Haz clic en **Import from URL** y pega `https://xxxx.trycloudflare.com/openapi.json`.
-2. En **Authentication**, elige **API Key** -> **Bearer** y pega `mi-clave-secreta`.
-
-### 2. Conectar en Gemini / Clientes MCP Locales (`stdio`)
-
-Añade a tu configuración de MCP (`settings.json` / `mcp_config.json`):
-
-```json
-{
-  "mcpServers": {
-    "gotta-remote-mcp": {
-      "command": "node",
-      "args": ["/ruta/absoluta/a/GottaRemoteMCP/dist/index.js", "--stdio"],
-      "env": {
-        "SSH_HOST": "192.168.1.50",
-        "SSH_USER": "ubuntu",
-        "SSH_PASSWORD": "tu_password"
-      }
-    }
-  }
-}
-```
-*(Si omites `SSH_HOST`, controlará directamente la máquina donde corre el servidor).*

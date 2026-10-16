@@ -67,11 +67,11 @@ async function ensureCloudflaredBinary(): Promise<string> {
   const downloadUrl = getCloudflaredBinaryUrl();
   if (!downloadUrl) {
     throw new Error(
-      "Instala 'cloudflared' manualmente para usar --tunnel en esta plataforma (ej. brew install cloudflared)."
+      "Instala 'cloudflared' manualmente para usar el túnel en esta plataforma (ej. brew install cloudflared)."
     );
   }
 
-  console.log("Descargando binario de Cloudflare Quick Tunnel (sin cuenta requerida)...");
+  console.log("Descargando binario de Cloudflare Quick Tunnel (sin cuenta ni API key requerida)...");
   await downloadFileFollowRedirects(downloadUrl, binPath);
   if (os.platform() !== "win32") {
     fs.chmodSync(binPath, 0o755);
@@ -79,7 +79,7 @@ async function ensureCloudflaredBinary(): Promise<string> {
   return binPath;
 }
 
-export async function startQuickTunnel(port: number, authSecret: string): Promise<string> {
+export async function startQuickTunnel(port: number): Promise<string> {
   const bin = await ensureCloudflaredBinary();
 
   return new Promise((resolve, reject) => {
@@ -95,15 +95,7 @@ export async function startQuickTunnel(port: number, authSecret: string): Promis
       const match = text.match(urlRegex);
       if (match && !resolved) {
         resolved = true;
-        const publicUrl = match[0];
-        console.log("\n==================================================================");
-        console.log("TUNEL PUBLICO ACTIVO (Sin verificacion de cuenta)");
-        console.log(`URL Base Publica      : ${publicUrl}`);
-        console.log(`OpenAPI (ChatGPT/Gem) : ${publicUrl}/openapi.json`);
-        console.log(`MCP SSE Endpoint      : ${publicUrl}/mcp/sse`);
-        console.log(`Bearer Token (Header) : ${authSecret}`);
-        console.log("==================================================================\n");
-        resolve(publicUrl);
+        resolve(match[0]);
       }
     };
 

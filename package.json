@@ -1,7 +1,7 @@
 {
   "name": "gotta-remote-mcp",
-  "version": "0.1.0",
-  "description": "Remote Desktop Commander MCP & OpenAPI Server for Gemini and ChatGPT with zero-verification static auth",
+  "version": "0.3.0",
+  "description": "Zero-API Remote Desktop Commander for normal ChatGPT & Gemini chats via bash-generated credentials + MCP",
   "main": "dist/index.js",
   "bin": {
     "gotta-remote-mcp": "dist/index.js"
@@ -10,8 +10,8 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:local": "node dist/index.js --no-tunnel",
     "start:stdio": "node dist/index.js --stdio",
-    "start:tunnel": "node dist/index.js --tunnel",
     "dev": "tsx src/index.ts"
   },
   "dependencies": {

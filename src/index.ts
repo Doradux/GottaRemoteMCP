@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 import dotenv from "dotenv";
 import os from "os";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -15,14 +16,30 @@ import { captureScreenBase64, performDesktopInput } from "./desktop.js";
 import {
   listProcesses,
   listRemoteOrLocalDirectory,
-  readRemoteOrLocalFile,
   writeRemoteOrLocalFile,
 } from "./files.js";
+import {
+  editFileBlock,
+  executeCommander,
+  getCurrentCwd,
+  getSessionOutput,
+  listActiveSessions,
+  readFileLines,
+  searchInCode,
+  terminateProcessOrSession,
+} from "./commander.js";
+import { buildChatPromptBlock, registerNormalChatBridge } from "./chat-bridge.js";
 import { startQuickTunnel } from "./tunnel.js";
 
 dotenv.config();
 
-const AUTH_SECRET = process.env.AUTH_SECRET || "admin123";
+// Credenciales autogeneradas en cada ejecución de bash si no se definen en .env
+const CHAT_USER = process.env.CHAT_USER || `cmd_${crypto.randomBytes(3).toString("hex")}`;
+const CHAT_PASS =
+  process.env.CHAT_PASS ||
+  process.env.AUTH_SECRET ||
+  `gotta_${crypto.randomBytes(8).toString("hex")}`;
+const AUTH_SECRET = CHAT_PASS;
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
 const sshCredentialProperties = {
@@ -50,7 +67,7 @@ export async function getSystemStatus(creds?: SSHCredentials): Promise<Record<st
       "uname -a && uptime && free -m 2>/dev/null || systeminfo",
       creds
     );
-    return { mode: "ssh", host, rawStatus: raw };
+    return { mode: "ssh", host, cwd: getCurrentCwd(creds), rawStatus: raw };
   }
 
   const totalMem = os.totalmem();
@@ -61,6 +78,7 @@ export async function getSystemStatus(creds?: SSHCredentials): Promise<Record<st
     platform: os.platform(),
     release: os.release(),
     arch: os.arch(),
+    cwd: getCurrentCwd(),
     uptimeSeconds: os.uptime(),
     cpuCount: os.cpus().length,
     loadAvg: os.loadavg(),
@@ -73,11 +91,11 @@ export async function getSystemStatus(creds?: SSHCredentials): Promise<Record<st
 }
 
 // ============================================================================
-// 1. SERVIDOR MCP (Para Gemini CLI / Antigravity / ChatGPT Desktop / Clientes MCP)
+// 1. SERVIDOR MCP (@remote desktop commander completo)
 // ============================================================================
 function createMcpServer(): Server {
   const server = new Server(
-    { name: "gotta-remote-mcp", version: "0.2.0" },
+    { name: "gotta-remote-mcp", version: "0.3.0" },
     { capabilities: { tools: {} } }
   );
 
@@ -86,20 +104,121 @@ function createMcpServer(): Server {
       {
         name: "execute_command",
         description:
-          "Ejecuta un comando shell/bash/powershell en el ordenador remoto (local o vía credenciales SSH directas).",
+          "Ejecuta un comando en terminal manteniendo el directorio actual (cwd) y pasando automáticamente a segundo plano si tarda más de timeoutMs.",
         inputSchema: {
           type: "object",
           properties: {
             command: { type: "string", description: "Comando bash/shell/powershell a ejecutar" },
+            cwd: { type: "string", description: "Directorio opcional" },
+            timeoutMs: { type: "number", description: "Tiempo máximo en ms antes de pasar a background (defecto 8000)" },
             ...sshCredentialProperties,
           },
           required: ["command"],
         },
       },
       {
-        name: "take_screenshot",
+        name: "read_session_output",
+        description: "Lee la salida acumulada de un comando que quedó ejecutándose en segundo plano por su PID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pid: { type: "number", description: "PID de la sesión activa" },
+          },
+          required: ["pid"],
+        },
+      },
+      {
+        name: "kill_process",
+        description: "Termina una sesión en segundo plano o un proceso del sistema por su PID.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            pid: { type: "number", description: "PID del proceso a terminar" },
+            ...sshCredentialProperties,
+          },
+          required: ["pid"],
+        },
+      },
+      {
+        name: "read_file",
+        description: "Lee un archivo (con numeración de líneas y rango opcional startLine/endLine).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Ruta del archivo a leer" },
+            startLine: { type: "number", description: "Línea inicial opcional (1-indexed)" },
+            endLine: { type: "number", description: "Línea final opcional" },
+            ...sshCredentialProperties,
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "write_file",
+        description: "Escribe o sobrescribe un archivo en el ordenador local o remoto.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Ruta del archivo a escribir" },
+            content: { type: "string", description: "Contenido del archivo" },
+            ...sshCredentialProperties,
+          },
+          required: ["path", "content"],
+        },
+      },
+      {
+        name: "edit_block",
         description:
-          "Toma una captura de pantalla del escritorio remoto (Linux X11/Wayland, Windows o macOS) y devuelve la imagen en Base64.",
+          "Reemplaza un bloque exacto de texto dentro de un archivo sin tener que reescribir el archivo entero (estilo Desktop Commander).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Ruta del archivo" },
+            search: { type: "string", description: "Bloque exacto a buscar" },
+            replace: { type: "string", description: "Nuevo bloque de reemplazo" },
+            ...sshCredentialProperties,
+          },
+          required: ["path", "search", "replace"],
+        },
+      },
+      {
+        name: "search_code",
+        description: "Busca texto o patrones regex dentro de archivos de un directorio (ripgrep/grep).",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Texto o expresión regular a buscar" },
+            path: { type: "string", description: "Directorio donde buscar (opcional)" },
+            ...sshCredentialProperties,
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "list_directory",
+        description: "Lista los archivos y carpetas de un directorio local o remoto.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            path: { type: "string", description: "Ruta del directorio" },
+            ...sshCredentialProperties,
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "list_processes",
+        description: "Lista las sesiones activas de comandos y los procesos con mayor uso de CPU/memoria.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            ...sshCredentialProperties,
+          },
+        },
+      },
+      {
+        name: "take_screenshot",
+        description: "Toma una captura de pantalla del escritorio remoto y devuelve la imagen en Base64.",
         inputSchema: {
           type: "object",
           properties: {
@@ -110,7 +229,7 @@ function createMcpServer(): Server {
       {
         name: "input_action",
         description:
-          "Simula clics de ratón, doble clic, clic derecho, arrastrar, scroll, movimiento de cursor y teclado en Linux/Windows/macOS.",
+          "Controla el ratón y el teclado en el escritorio (click, double_click, right_click, move, drag, scroll, type, key).",
         inputSchema: {
           type: "object",
           properties: {
@@ -127,70 +246,22 @@ function createMcpServer(): Server {
                 "key",
               ],
             },
-            x: { type: "number", description: "Coordenada X de pantalla" },
-            y: { type: "number", description: "Coordenada Y de pantalla" },
-            toX: { type: "number", description: "Coordenada X destino para drag" },
-            toY: { type: "number", description: "Coordenada Y destino para drag" },
-            button: { type: "number", description: "Botón del ratón (1=izq, 2=medio, 3=der)" },
-            scrollAmount: { type: "number", description: "Pasos de scroll (positivo=abajo, negativo=arriba)" },
-            text: { type: "string", description: "Texto a escribir cuando action='type'" },
-            key: { type: "string", description: "Tecla o combinación cuando action='key' (ej. Return, ctrl+c)" },
+            x: { type: "number" },
+            y: { type: "number" },
+            toX: { type: "number" },
+            toY: { type: "number" },
+            button: { type: "number" },
+            scrollAmount: { type: "number" },
+            text: { type: "string" },
+            key: { type: "string" },
             ...sshCredentialProperties,
           },
           required: ["action"],
         },
       },
       {
-        name: "read_file",
-        description: "Lee el contenido de un archivo en el ordenador local o remoto (SFTP/SSH).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Ruta del archivo a leer" },
-            ...sshCredentialProperties,
-          },
-          required: ["path"],
-        },
-      },
-      {
-        name: "write_file",
-        description: "Escribe o sobrescribe un archivo en el ordenador local o remoto (SFTP/SSH).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Ruta del archivo a escribir" },
-            content: { type: "string", description: "Contenido del archivo" },
-            ...sshCredentialProperties,
-          },
-          required: ["path", "content"],
-        },
-      },
-      {
-        name: "list_directory",
-        description: "Lista los archivos y carpetas de un directorio local o remoto (SFTP/SSH).",
-        inputSchema: {
-          type: "object",
-          properties: {
-            path: { type: "string", description: "Ruta del directorio" },
-            ...sshCredentialProperties,
-          },
-          required: ["path"],
-        },
-      },
-      {
-        name: "list_processes",
-        description: "Lista los procesos en ejecución con mayor uso de CPU/memoria.",
-        inputSchema: {
-          type: "object",
-          properties: {
-            ...sshCredentialProperties,
-          },
-        },
-      },
-      {
         name: "system_status",
-        description:
-          "Devuelve uso de CPU, RAM, SO y red para dar contexto rápido al agente sobre el ordenador remoto.",
+        description: "Devuelve uso de CPU, RAM, SO, directorio actual y red del ordenador.",
         inputSchema: {
           type: "object",
           properties: {
@@ -206,8 +277,91 @@ function createMcpServer(): Server {
     const creds = extractCreds(args);
 
     if (name === "execute_command") {
-      const output = await runRemoteOrLocalCommand(String(args.command), creds);
-      return { content: [{ type: "text", text: output || "Comando ejecutado sin salida." }] };
+      const res = await executeCommander(String(args.command), {
+        cwd: args.cwd as string | undefined,
+        timeoutMs: args.timeoutMs !== undefined ? Number(args.timeoutMs) : undefined,
+        creds,
+      });
+      return {
+        content: [
+          {
+            type: "text",
+            text: `[CWD: ${res.cwd} | Status: ${res.status} | PID: ${res.pid ?? "-"}]\n${res.output}`,
+          },
+        ],
+      };
+    }
+
+    if (name === "read_session_output") {
+      const session = getSessionOutput(Number(args.pid));
+      if (!session) {
+        return { content: [{ type: "text", text: `No se encontró sesión con PID ${args.pid}` }] };
+      }
+      return { content: [{ type: "text", text: JSON.stringify(session, null, 2) }] };
+    }
+
+    if (name === "kill_process") {
+      const out = await terminateProcessOrSession(Number(args.pid), creds);
+      return { content: [{ type: "text", text: out }] };
+    }
+
+    if (name === "read_file") {
+      const res = await readFileLines(
+        String(args.path),
+        args.startLine !== undefined ? Number(args.startLine) : undefined,
+        args.endLine !== undefined ? Number(args.endLine) : undefined,
+        creds
+      );
+      return {
+        content: [
+          {
+            type: "text",
+            text: `File: ${res.path} (${res.totalLines} lines)\n\n${res.content}`,
+          },
+        ],
+      };
+    }
+
+    if (name === "write_file") {
+      const result = await writeRemoteOrLocalFile(String(args.path), String(args.content), creds);
+      return { content: [{ type: "text", text: result }] };
+    }
+
+    if (name === "edit_block") {
+      const result = await editFileBlock(
+        String(args.path),
+        String(args.search),
+        String(args.replace),
+        creds
+      );
+      return { content: [{ type: "text", text: result }] };
+    }
+
+    if (name === "search_code") {
+      const out = await searchInCode(
+        String(args.query),
+        args.path ? String(args.path) : undefined,
+        creds
+      );
+      return { content: [{ type: "text", text: out }] };
+    }
+
+    if (name === "list_directory") {
+      const entries = await listRemoteOrLocalDirectory(String(args.path), creds);
+      return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }] };
+    }
+
+    if (name === "list_processes") {
+      const procs = await listProcesses(creds);
+      const sessions = listActiveSessions();
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Active Background Sessions:\n${JSON.stringify(sessions, null, 2)}\n\nSystem Processes:\n${procs}`,
+          },
+        ],
+      };
     }
 
     if (name === "take_screenshot") {
@@ -224,26 +378,6 @@ function createMcpServer(): Server {
       };
     }
 
-    if (name === "read_file") {
-      const content = await readRemoteOrLocalFile(String(args.path), creds);
-      return { content: [{ type: "text", text: content }] };
-    }
-
-    if (name === "write_file") {
-      const result = await writeRemoteOrLocalFile(String(args.path), String(args.content), creds);
-      return { content: [{ type: "text", text: result }] };
-    }
-
-    if (name === "list_directory") {
-      const entries = await listRemoteOrLocalDirectory(String(args.path), creds);
-      return { content: [{ type: "text", text: JSON.stringify(entries, null, 2) }] };
-    }
-
-    if (name === "list_processes") {
-      const procs = await listProcesses(creds);
-      return { content: [{ type: "text", text: procs }] };
-    }
-
     if (name === "system_status") {
       const status = await getSystemStatus(creds);
       return {
@@ -258,13 +392,30 @@ function createMcpServer(): Server {
 }
 
 // ============================================================================
-// 2. SERVIDOR HTTP + SSE MCP + OPENAPI 3.1 (Para ChatGPT Actions y Gemini)
+// 2. SERVIDOR HTTP + PUENTE DE CHAT NORMAL (SIN API) + SSE MCP
 // ============================================================================
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 
 let publicTunnelUrl: string | null = null;
+
+function getEffectiveBaseUrl(req: express.Request): string {
+  if (publicTunnelUrl) return publicTunnelUrl;
+  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
+  return `${proto}://${req.get("host")}`;
+}
+
+// Registrar puente directo para chats normales (/c/:user/:pass/*) sin necesidad de API Keys
+registerNormalChatBridge(
+  app,
+  () => ({
+    user: CHAT_USER,
+    pass: CHAT_PASS,
+    getBaseUrl: getEffectiveBaseUrl,
+  }),
+  () => getSystemStatus()
+);
 
 function verifyAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
@@ -277,7 +428,7 @@ function verifyAuth(req: express.Request, res: express.Response, next: express.N
 
   if (token !== AUTH_SECRET) {
     return res.status(401).json({
-      error: "Credenciales inválidas. Pasa Authorization: Bearer <AUTH_SECRET>, X-API-Key o auth_secret.",
+      error: "Credenciales inválidas. Usa la URL /c/<user>/<pass> o Authorization: Bearer <PASS>.",
     });
   }
   next();
@@ -288,8 +439,12 @@ app.use("/api", verifyAuth);
 app.post("/api/execute", async (req, res) => {
   try {
     const creds = extractCreds(req.body);
-    const output = await runRemoteOrLocalCommand(String(req.body.command), creds);
-    res.json({ success: true, output });
+    const result = await executeCommander(String(req.body.command), {
+      cwd: req.body.cwd,
+      timeoutMs: req.body.timeoutMs,
+      creds,
+    });
+    res.json({ success: true, ...result });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -316,50 +471,6 @@ app.get("/api/screenshot", async (req, res) => {
   }
 });
 
-app.post("/api/files/read", async (req, res) => {
-  try {
-    const creds = extractCreds(req.body);
-    const content = await readRemoteOrLocalFile(String(req.body.path), creds);
-    res.json({ success: true, content });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/files/write", async (req, res) => {
-  try {
-    const creds = extractCreds(req.body);
-    const message = await writeRemoteOrLocalFile(
-      String(req.body.path),
-      String(req.body.content),
-      creds
-    );
-    res.json({ success: true, message });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/files/list", async (req, res) => {
-  try {
-    const creds = extractCreds(req.body);
-    const entries = await listRemoteOrLocalDirectory(String(req.body.path || "."), creds);
-    res.json({ success: true, entries });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get("/api/processes", async (req, res) => {
-  try {
-    const creds = extractCreds(req.query as Record<string, any>);
-    const processes = await listProcesses(creds);
-    res.json({ success: true, processes });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
 app.get("/api/status", async (req, res) => {
   try {
     const creds = extractCreds(req.query as Record<string, any>);
@@ -370,7 +481,6 @@ app.get("/api/status", async (req, res) => {
   }
 });
 
-// Transporte MCP sobre SSE para conexiones remotas directas sin verificación de cuenta
 const sseTransports = new Map<string, SSEServerTransport>();
 
 app.get("/mcp/sse", verifyAuth, async (_req, res) => {
@@ -392,182 +502,6 @@ app.post("/mcp/messages", verifyAuth, async (req, res) => {
   await transport.handlePostMessage(req, res, req.body);
 });
 
-// Esquema OpenAPI 3.1 autogenerado para importar en ChatGPT / Gemini con 1 clic
-app.get("/openapi.json", (req, res) => {
-  const proto = (req.headers["x-forwarded-proto"] as string) || req.protocol;
-  const serverUrl = publicTunnelUrl || `${proto}://${req.get("host")}`;
-  res.json({
-    openapi: "3.1.0",
-    info: {
-      title: "GottaRemoteMCP Commander API",
-      version: "0.2.0",
-      description:
-        "Control remoto completo de escritorio, archivos y terminal para agentes Gemini y ChatGPT sin verificación de cuenta.",
-    },
-    servers: [{ url: serverUrl }],
-    components: {
-      securitySchemes: {
-        BearerAuth: { type: "http", scheme: "bearer" },
-      },
-    },
-    security: [{ BearerAuth: [] }],
-    paths: {
-      "/api/execute": {
-        post: {
-          operationId: "executeCommand",
-          summary: "Ejecuta un comando shell/bash/powershell en el ordenador remoto",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["command"],
-                  properties: {
-                    command: { type: "string", description: "Comando a ejecutar" },
-                    ...sshCredentialProperties,
-                  },
-                },
-              },
-            },
-          },
-          responses: { "200": { description: "Resultado del comando" } },
-        },
-      },
-      "/api/input": {
-        post: {
-          operationId: "inputAction",
-          summary: "Simula clics de ratón, arrastrar, scroll, movimiento de cursor y teclado",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["action"],
-                  properties: {
-                    action: {
-                      type: "string",
-                      enum: [
-                        "click",
-                        "double_click",
-                        "right_click",
-                        "move",
-                        "drag",
-                        "scroll",
-                        "type",
-                        "key",
-                      ],
-                    },
-                    x: { type: "number" },
-                    y: { type: "number" },
-                    toX: { type: "number" },
-                    toY: { type: "number" },
-                    button: { type: "number" },
-                    scrollAmount: { type: "number" },
-                    text: { type: "string" },
-                    key: { type: "string" },
-                    ...sshCredentialProperties,
-                  },
-                },
-              },
-            },
-          },
-          responses: { "200": { description: "Acción ejecutada" } },
-        },
-      },
-      "/api/screenshot": {
-        get: {
-          operationId: "takeScreenshot",
-          summary: "Obtiene una captura de pantalla del escritorio remoto en Base64",
-          responses: { "200": { description: "Imagen en Base64" } },
-        },
-      },
-      "/api/files/read": {
-        post: {
-          operationId: "readFile",
-          summary: "Lee el contenido de un archivo local o remoto por SFTP/SSH",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["path"],
-                  properties: {
-                    path: { type: "string" },
-                    ...sshCredentialProperties,
-                  },
-                },
-              },
-            },
-          },
-          responses: { "200": { description: "Contenido del archivo" } },
-        },
-      },
-      "/api/files/write": {
-        post: {
-          operationId: "writeFile",
-          summary: "Escribe contenido en un archivo local o remoto por SFTP/SSH",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["path", "content"],
-                  properties: {
-                    path: { type: "string" },
-                    content: { type: "string" },
-                    ...sshCredentialProperties,
-                  },
-                },
-              },
-            },
-          },
-          responses: { "200": { description: "Confirmación de escritura" } },
-        },
-      },
-      "/api/files/list": {
-        post: {
-          operationId: "listDirectory",
-          summary: "Lista archivos y carpetas de un directorio local o remoto",
-          requestBody: {
-            required: true,
-            content: {
-              "application/json": {
-                schema: {
-                  type: "object",
-                  required: ["path"],
-                  properties: {
-                    path: { type: "string" },
-                    ...sshCredentialProperties,
-                  },
-                },
-              },
-            },
-          },
-          responses: { "200": { description: "Listado de archivos" } },
-        },
-      },
-      "/api/processes": {
-        get: {
-          operationId: "listProcesses",
-          summary: "Lista los procesos activos con mayor consumo de CPU",
-          responses: { "200": { description: "Listado de procesos" } },
-        },
-      },
-      "/api/status": {
-        get: {
-          operationId: "systemStatus",
-          summary: "Devuelve el uso de CPU, RAM, SO y estado del sistema remoto",
-          responses: { "200": { description: "Estado del sistema" } },
-        },
-      },
-    },
-  });
-});
-
 async function main() {
   if (process.argv.includes("--stdio")) {
     const mcpServer = createMcpServer();
@@ -577,17 +511,23 @@ async function main() {
   }
 
   app.listen(PORT, async () => {
-    console.log(`GottaRemoteMCP v0.2.0 activo en http://localhost:${PORT}`);
-    console.log(`OpenAPI Spec (ChatGPT / Gemini): http://localhost:${PORT}/openapi.json`);
-    console.log(`MCP SSE Endpoint: http://localhost:${PORT}/mcp/sse`);
+    const localUrl = `http://localhost:${PORT}`;
+    console.log(`GottaRemoteMCP v0.3.0 escuchando localmente en ${localUrl}`);
 
-    if (process.argv.includes("--tunnel") || process.env.ENABLE_TUNNEL === "true") {
+    const disableTunnel =
+      process.argv.includes("--no-tunnel") || process.env.DISABLE_TUNNEL === "true";
+
+    if (!disableTunnel) {
       try {
-        publicTunnelUrl = await startQuickTunnel(PORT, AUTH_SECRET);
+        console.log("Iniciando túnel público gratuito para conectar desde cualquier chat normal...");
+        publicTunnelUrl = await startQuickTunnel(PORT);
       } catch (err: any) {
-        console.error(`Aviso: No se pudo iniciar el túnel automático: ${err.message}`);
+        console.error(`Aviso: No se pudo iniciar el túnel público (${err.message}). Usando URL local.`);
       }
     }
+
+    const activeUrl = publicTunnelUrl || localUrl;
+    console.log(buildChatPromptBlock(activeUrl, CHAT_USER, CHAT_PASS));
   });
 }
 
