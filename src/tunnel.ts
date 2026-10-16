@@ -4,6 +4,62 @@ import path from "path";
 import os from "os";
 import https from "https";
 
+/**
+ * Inicia un túnel HTTPS directo mediante localhost.run (SSH estándar, sin WAF de Cloudflare
+ * que bloquee al navegador integrado de ChatGPT Web o Gemini Web).
+ */
+function startLocalhostRunTunnel(port: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "ssh",
+      [
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ServerAliveInterval=30",
+        "-R",
+        `80:localhost:${port}`,
+        "nokey@localhost.run",
+      ],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    );
+
+    let resolved = false;
+    const lhrRegex = /https:\/\/[a-zA-Z0-9-]+\.lhr\.life/;
+
+    const onData = (data: Buffer) => {
+      const text = data.toString();
+      const match = text.match(lhrRegex);
+      if (match && !resolved) {
+        resolved = true;
+        resolve(match[0]);
+      }
+    };
+
+    child.stdout.on("data", onData);
+    child.stderr.on("data", onData);
+
+    child.on("error", (err) => {
+      if (!resolved) reject(err);
+    });
+
+    child.on("close", () => {
+      if (!resolved) reject(new Error("SSH localhost.run cerró antes de asignar URL"));
+    });
+
+    setTimeout(() => {
+      if (!resolved) {
+        child.kill();
+        reject(new Error("Timeout esperando túnel localhost.run"));
+      }
+    }, 12000);
+  });
+}
+
 function getCloudflaredBinaryUrl(): string | null {
   const platform = os.platform();
   const arch = os.arch();
@@ -26,7 +82,12 @@ function downloadFileFollowRedirects(url: string, dest: string): Promise<void> {
     const request = (currentUrl: string) => {
       https
         .get(currentUrl, (res) => {
-          if (res.statusCode && res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          if (
+            res.statusCode &&
+            res.statusCode >= 300 &&
+            res.statusCode < 400 &&
+            res.headers.location
+          ) {
             return request(res.headers.location);
           }
           if (res.statusCode !== 200) {
@@ -51,9 +112,7 @@ async function ensureCloudflaredBinary(): Promise<string> {
       stdio: "ignore",
     });
     return "cloudflared";
-  } catch {
-    // No está instalado globalmente; descargamos binario autónomo en ~/.cache/gotta-remote-mcp
-  }
+  } catch {}
 
   const cacheDir = path.join(os.homedir(), ".cache", "gotta-remote-mcp");
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -66,12 +125,9 @@ async function ensureCloudflaredBinary(): Promise<string> {
 
   const downloadUrl = getCloudflaredBinaryUrl();
   if (!downloadUrl) {
-    throw new Error(
-      "Instala 'cloudflared' manualmente para usar el túnel en esta plataforma (ej. brew install cloudflared)."
-    );
+    throw new Error("Instala 'cloudflared' o 'ssh' para usar túnel público.");
   }
 
-  console.log("Descargando binario de Cloudflare Quick Tunnel (sin cuenta ni API key requerida)...");
   await downloadFileFollowRedirects(downloadUrl, binPath);
   if (os.platform() !== "win32") {
     fs.chmodSync(binPath, 0o755);
@@ -79,9 +135,8 @@ async function ensureCloudflaredBinary(): Promise<string> {
   return binPath;
 }
 
-export async function startQuickTunnel(port: number): Promise<string> {
+async function startCloudflaredTunnel(port: number): Promise<string> {
   const bin = await ensureCloudflaredBinary();
-
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ["tunnel", "--url", `http://localhost:${port}`], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -101,15 +156,25 @@ export async function startQuickTunnel(port: number): Promise<string> {
 
     child.stdout.on("data", handleChunk);
     child.stderr.on("data", handleChunk);
-
     child.on("error", (err) => {
       if (!resolved) reject(err);
     });
 
     setTimeout(() => {
       if (!resolved) {
-        reject(new Error("Tiempo de espera agotado al iniciar Cloudflare Quick Tunnel"));
+        reject(new Error("Timeout al iniciar Cloudflare Quick Tunnel"));
       }
-    }, 25000);
+    }, 20000);
   });
+}
+
+export async function startQuickTunnel(port: number): Promise<string> {
+  if (process.env.TUNNEL_PROVIDER !== "cloudflare") {
+    try {
+      return await startLocalhostRunTunnel(port);
+    } catch {
+      // Fallback a cloudflared si SSH no está disponible
+    }
+  }
+  return await startCloudflaredTunnel(port);
 }

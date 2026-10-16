@@ -56,34 +56,43 @@ function renderBotHtmlPage(title: string, bodyText: string, baseUrl: string, ext
 
 export function buildChatPromptBlock(
   publicOrLocalUrl: string,
-  localUrl: string,
+  _localUrl: string,
   user: string,
   pass: string
 ): string {
+  const webBase = `${publicOrLocalUrl}/c/${user}/${pass}`;
   return `
 ================================================================================
-  GOTTAREMOTEMCP v0.4.0 — CONTROL AUTONOMO TOTAL (iOS / Android / Web / CLI)
+  GOTTAREMOTEMCP — CONTROL AUTONOMO DESDE CHAT WEB / MOVIL (SIN EXTENSION NI CLI)
 ================================================================================
-  CREDENCIALES GENERADAS EN BASH (Pásalas en el chat para desbloquear tu PC):
-    • Usuario : ${user}
-    • Clave   : ${pass}
+  Tunel Publico HTTPS : ${publicOrLocalUrl}
+  Usuario             : ${user}
+  Clave               : ${pass}
+  URL OpenAPI Actions : ${publicOrLocalUrl}/openapi.json
+  URL MCP Directo     : ${publicOrLocalUrl}/mcp/${user}/${pass}
 --------------------------------------------------------------------------------
-  1. CONEXION NATIVA MCP (App Oficial ChatGPT iOS/Android/Web, Gemini, Claude)
-     - En ChatGPT (Settings -> Connectors -> Create) o cliente MCP:
-       URL del Servidor MCP : ${publicOrLocalUrl}/mcp
-       Autenticación        : None (Sin OAuth; se autentica en el chat con connect_pc)
-       (URL pre-autenticada opcional: ${publicOrLocalUrl}/mcp/${user}/${pass})
+  COPIA Y PEGA ESTE BLOQUE EN CUALQUIER CHAT WEB DE CHATGPT O GEMINI
+  (O en la app de iOS / Android, sin extensiones):
+--------------------------------------------------------------------------------
+Accede con tu navegador/lector web integrado a mi panel de entorno de desarrollo en:
+${webBase}?t=1
 
-  2. CONEXION OPENAPI ACTIONS (Custom GPT en iOS / Android / Web)
-     - En Configure -> Actions -> Import from URL:
-       URL OpenAPI 3.1      : ${publicOrLocalUrl}/openapi.json
-       Autenticación        : None (Incluye x-openai-isConsequential: false para
-                              que el agente ejecute 20+ comandos seguidos solo)
+Credenciales de sesión integradas en la ruta:
+- Usuario: ${user}
+- Clave: ${pass}
 
-  3. QUE ESCRIBIR EN CUALQUIER CHAT NUEVO (iOS / Android / Web sin extensión):
-     "Conéctate a mi PC con usuario ${user} y clave ${pass}"
-     El agente llamará por sí solo a connect_pc, ejecutará todos los comandos,
-     leerá las salidas por su cuenta sin pedirte nada y te dará las conclusiones.
+Desde ese enlace puedes consultar y operar mi entorno de forma 100% autónoma visitando directamente estas rutas GET (añade siempre &t=<numero_distinto> al final para no leer caché) y encadenando todas las lecturas que necesites antes de responderme:
+- Ver estado y directorio actual: ${webBase}?t=1
+- Ejecutar comando en terminal: ${webBase}/exec?cmd=COMANDO_URL_ENCODED&t=2 (o en Base64: ${webBase}/exec?b64=COMANDO_BASE64&t=2)
+- Listar archivos de carpeta: ${webBase}/ls?path=.&t=2
+- Leer archivo: ${webBase}/read?path=RUTA&start=1&end=150&t=2
+- Escribir archivo: ${webBase}/write?path=RUTA&content=TEXTO_URL_ENCODED&t=2
+- Editar bloque en archivo: ${webBase}/edit?path=RUTA&search=VIEJO&replace=NUEVO&t=2
+- Buscar en código: ${webBase}/search?q=TEXTO&path=.&t=2
+- Sesiones y procesos: ${webBase}/sessions?t=2
+- Ratón y teclado: ${webBase}/input?action=click&x=500&y=300&t=2
+
+Instrucción importante: Abre primero ${webBase}?t=1, realiza por tu cuenta todas las consultas o comandos necesarios encadenando las URLs anteriores sin pedirme confirmación intermedia, y cuando termines escríbeme directamente aquí en el chat los resultados y tus conclusiones.
 ================================================================================
 `;
 }
