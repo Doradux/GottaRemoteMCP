@@ -60,39 +60,37 @@ export function buildChatPromptBlock(
   user: string,
   pass: string
 ): string {
-  const webBase = `${publicOrLocalUrl}/c/${user}/${pass}`;
   return `
 ================================================================================
-  GOTTAREMOTEMCP — CONTROL AUTONOMO DESDE CHAT WEB / MOVIL (SIN EXTENSION NI CLI)
+  GOTTAREMOTEMCP — CONTROL AUTONOMO NATIVO (SIN EXTENSIONES NI AUTOSENDS)
 ================================================================================
-  Tunel Publico HTTPS : ${publicOrLocalUrl}
-  Usuario             : ${user}
-  Clave               : ${pass}
-  URL OpenAPI Actions : ${publicOrLocalUrl}/openapi.json
-  URL MCP Directo     : ${publicOrLocalUrl}/mcp/${user}/${pass}
+  CREDENCIALES DE SESION GENERADAS EN BASH:
+    • Usuario : ${user}
+    • Clave   : ${pass}
 --------------------------------------------------------------------------------
-  COPIA Y PEGA ESTE BLOQUE EN CUALQUIER CHAT WEB DE CHATGPT O GEMINI
-  (O en la app de iOS / Android, sin extensiones):
---------------------------------------------------------------------------------
-Accede con tu navegador/lector web integrado a mi panel de entorno de desarrollo en:
-${webBase}?t=1
+  IMPORTANTE: Los chats web normales (el lector de enlaces de búsqueda de
+  ChatGPT o Gemini) tienen prohibido por OpenAI/Google ejecutar APIs o comandos
+  simplemente pegando una URL en el texto del chat.
 
-Credenciales de sesión integradas en la ruta:
-- Usuario: ${user}
-- Clave: ${pass}
+  Para que el AGENTE tenga control nativo de inputs y outputs (igual que
+  @remote desktop commander) desde el Chat Web o la App de iOS/Android:
 
-Desde ese enlace puedes consultar y operar mi entorno de forma 100% autónoma visitando directamente estas rutas GET (añade siempre &t=<numero_distinto> al final para no leer caché) y encadenando todas las lecturas que necesites antes de responderme:
-- Ver estado y directorio actual: ${webBase}?t=1
-- Ejecutar comando en terminal: ${webBase}/exec?cmd=COMANDO_URL_ENCODED&t=2 (o en Base64: ${webBase}/exec?b64=COMANDO_BASE64&t=2)
-- Listar archivos de carpeta: ${webBase}/ls?path=.&t=2
-- Leer archivo: ${webBase}/read?path=RUTA&start=1&end=150&t=2
-- Escribir archivo: ${webBase}/write?path=RUTA&content=TEXTO_URL_ENCODED&t=2
-- Editar bloque en archivo: ${webBase}/edit?path=RUTA&search=VIEJO&replace=NUEVO&t=2
-- Buscar en código: ${webBase}/search?q=TEXTO&path=.&t=2
-- Sesiones y procesos: ${webBase}/sessions?t=2
-- Ratón y teclado: ${webBase}/input?action=click&x=500&y=300&t=2
+  OPCION A — CONECTOR MCP EN CHATGPT WEB / iOS / ANDROID:
+    1. En chatgpt.com ve a: Settings -> Connectors -> Create (o Developer Mode)
+    2. Pega esta URL MCP:
+       ${publicOrLocalUrl}/mcp/${user}/${pass}
+       (O ${publicOrLocalUrl}/mcp y pasa el usuario y clave en el chat)
 
-Instrucción importante: Abre primero ${webBase}?t=1, realiza por tu cuenta todas las consultas o comandos necesarios encadenando las URLs anteriores sin pedirme confirmación intermedia, y cuando termines escríbeme directamente aquí en el chat los resultados y tus conclusiones.
+  OPCION B — CUSTOM GPT ACTION EN CHATGPT WEB / iOS / ANDROID:
+    1. En chatgpt.com ve a: Explore GPTs -> Create -> Configure -> Actions
+    2. Pulsa "Import from URL" y pega:
+       ${publicOrLocalUrl}/openapi/${user}/${pass}.json
+    3. Deja Authentication en "None" y dale a Create/Update.
+
+  Una vez conectado el Conector o el GPT, abre cualquier chat en Web o Móvil y
+  pídele cualquier tarea (si usaste la URL sin credenciales integradas, dile:
+  "Conéctate con usuario ${user} y clave ${pass}"). El agente llamará a las
+  herramientas internamente y te escribirá directamente las conclusiones.
 ================================================================================
 `;
 }
