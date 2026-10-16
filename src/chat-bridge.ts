@@ -60,38 +60,30 @@ export function buildChatPromptBlock(
   user: string,
   pass: string
 ): string {
-  const publicBase = `${publicOrLocalUrl}/c/${user}/${pass}`;
-  const localBase = `${localUrl}/c/${user}/${pass}`;
   return `
 ================================================================================
-  CREDENCIALES GENERADAS (MODO SIN API - CHATGPT / GEMINI / AGENTES)
+  GOTTAREMOTEMCP v0.4.0 — CONTROL AUTONOMO TOTAL (iOS / Android / Web / CLI)
 ================================================================================
-  Usuario         : ${user}
-  Password/Key    : ${pass}
-  Endpoint Local  : ${localBase}
-  Endpoint Tunel  : ${publicBase}
-  Userscript URL  : ${localBase}/gotta.user.js
+  CREDENCIALES GENERADAS EN BASH (Pásalas en el chat para desbloquear tu PC):
+    • Usuario : ${user}
+    • Clave   : ${pass}
 --------------------------------------------------------------------------------
-  COMO CONECTAR UN CHAT NORMAL DE CHATGPT O GEMINI (SALTANDO SU BLOQUEO DE RED):
-  (ChatGPT bloquea en su servidor salida DNS/curl y dominios trycloudflare.com.
-   Por eso incluimos el Puente de Navegador que ejecuta las órdenes desde tu
-   propio navegador sin API keys y sin que OpenAI pueda bloquearlo):
+  1. CONEXION NATIVA MCP (App Oficial ChatGPT iOS/Android/Web, Gemini, Claude)
+     - En ChatGPT (Settings -> Connectors -> Create) o cliente MCP:
+       URL del Servidor MCP : ${publicOrLocalUrl}/mcp
+       Autenticación        : None (Sin OAuth; se autentica en el chat con connect_pc)
+       (URL pre-autenticada opcional: ${publicOrLocalUrl}/mcp/${user}/${pass})
 
-  1. En Chrome/Brave/Edge abre: chrome://extensions
-  2. Activa "Modo de desarrollador" -> "Cargar descomprimida" y selecciona:
-     /home/marcos/GottaRemoteMCP/browser-extension
-     (O si usas Tampermonkey, abre: ${localBase}/gotta.user.js)
-  3. Abre https://chatgpt.com o https://gemini.google.com:
-     Verás abajo a la derecha el widget verde "GottaRemoteMCP Bridge".
-     Pega ahí la URL de Control:
-     ${localBase}   (si el navegador está en este mismo PC)
-     o ${publicBase} (si estás en otro dispositivo)
-  4. Pulsa el botón verde "🚀 Conectar este Chat con mi PC" (o pega el bloque
-     de abajo en el chat).
---------------------------------------------------------------------------------
-  PROMPT PARA CHAT NORMAL (CON PUENTE DE NAVEGADOR ACTIVO):
---------------------------------------------------------------------------------
-${GOTTA_CHAT_SYSTEM_PROMPT}
+  2. CONEXION OPENAPI ACTIONS (Custom GPT en iOS / Android / Web)
+     - En Configure -> Actions -> Import from URL:
+       URL OpenAPI 3.1      : ${publicOrLocalUrl}/openapi.json
+       Autenticación        : None (Incluye x-openai-isConsequential: false para
+                              que el agente ejecute 20+ comandos seguidos solo)
+
+  3. QUE ESCRIBIR EN CUALQUIER CHAT NUEVO (iOS / Android / Web sin extensión):
+     "Conéctate a mi PC con usuario ${user} y clave ${pass}"
+     El agente llamará por sí solo a connect_pc, ejecutará todos los comandos,
+     leerá las salidas por su cuenta sin pedirte nada y te dará las conclusiones.
 ================================================================================
 `;
 }
