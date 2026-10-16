@@ -101,6 +101,20 @@ export function registerNormalChatBridge(
   getCredentials: () => { user: string; pass: string; getBaseUrl: (req: express.Request) => string },
   getSystemStatusFn: () => Promise<Record<string, any>>
 ) {
+  // Permite a la extensión local descubrir o sincronizar automáticamente la URL activa en localhost
+  app.get("/local-session", async (req, res) => {
+    const { user, pass, getBaseUrl } = getCredentials();
+    const status = await getSystemStatusFn();
+    res.json({
+      success: true,
+      endpoint: `http://localhost:${req.socket.localPort || 3000}/c/${user}/${pass}`,
+      tunnelEndpoint: `${getBaseUrl(req)}/c/${user}/${pass}`,
+      user,
+      pass,
+      status,
+    });
+  });
+
   app.get("/robots.txt", (_req, res) => {
     res.type("text/plain").send(
       `User-agent: ChatGPT-User
