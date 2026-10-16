@@ -1111,6 +1111,116 @@ app.get("/openapi/:user/:pass.json", (req, res) => {
   res.json(buildOpenApiSpec(getEffectiveBaseUrl(req)));
 });
 
+// Esquema nativo de Function Declarations para Google Gemini / Google AI Studio
+app.get("/gemini-tools.json", (_req, res) => {
+  res.json({
+    functionDeclarations: [
+      {
+        name: "connect_pc",
+        description:
+          "Autentica la sesión con el ordenador remoto usando el Usuario y Clave generados en bash.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            username: { type: "STRING", description: "Usuario generado en bash (cmd_...)" },
+            password: { type: "STRING", description: "Clave generada en bash (gotta_...)" },
+          },
+          required: ["username", "password"],
+        },
+      },
+      {
+        name: "execute_command",
+        description:
+          "Ejecuta un comando en la terminal del ordenador remoto manteniendo el directorio actual (cwd).",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            command: { type: "STRING", description: "Comando bash/shell a ejecutar" },
+            cwd: { type: "STRING", description: "Directorio opcional" },
+          },
+          required: ["command"],
+        },
+      },
+      {
+        name: "read_file",
+        description: "Lee un archivo del ordenador remoto con numeración de líneas.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            path: { type: "STRING", description: "Ruta del archivo" },
+            startLine: { type: "NUMBER", description: "Línea inicial opcional" },
+            endLine: { type: "NUMBER", description: "Línea final opcional" },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "write_file",
+        description: "Crea o sobrescribe un archivo en el ordenador remoto.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            path: { type: "STRING", description: "Ruta del archivo" },
+            content: { type: "STRING", description: "Contenido del archivo" },
+          },
+          required: ["path", "content"],
+        },
+      },
+      {
+        name: "edit_block",
+        description: "Reemplaza un bloque exacto de texto dentro de un archivo (search & replace).",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            path: { type: "STRING", description: "Ruta del archivo" },
+            search: { type: "STRING", description: "Texto exacto a buscar" },
+            replace: { type: "STRING", description: "Texto nuevo de reemplazo" },
+          },
+          required: ["path", "search", "replace"],
+        },
+      },
+      {
+        name: "list_directory",
+        description: "Lista los archivos y carpetas de un directorio.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            path: { type: "STRING", description: "Ruta del directorio" },
+          },
+          required: ["path"],
+        },
+      },
+      {
+        name: "search_code",
+        description: "Busca texto o patrones regex dentro de archivos (ripgrep/grep).",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            query: { type: "STRING", description: "Patrón a buscar" },
+            path: { type: "STRING", description: "Directorio opcional" },
+          },
+          required: ["query"],
+        },
+      },
+      {
+        name: "input_action",
+        description: "Controla el ratón y el teclado en el escritorio remoto.",
+        parameters: {
+          type: "OBJECT",
+          properties: {
+            action: { type: "STRING", description: "click, double_click, right_click, move, drag, scroll, type, key" },
+            x: { type: "NUMBER" },
+            y: { type: "NUMBER" },
+            text: { type: "STRING" },
+            key: { type: "STRING" },
+          },
+          required: ["action"],
+        },
+      },
+    ],
+  });
+});
+
 async function main() {
   if (process.argv.includes("--stdio")) {
     const mcpServer = createMcpServer(true);
