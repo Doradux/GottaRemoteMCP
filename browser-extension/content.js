@@ -9,7 +9,7 @@ Tienes control directo de mi ordenador mediante el puente de mi navegador.
   • Listar carpeta: {"action":"ls","path":"."}
   • Buscar código: {"action":"search","q":"...","path":"."}
   • Ratón/Teclado: {"action":"input","type":"click","x":500,"y":300}
-- Mi navegador ejecutará tu JSON en mi PC y te devolverá "[GottaRemoteMCP Output]" en el siguiente mensaje.
+- Mi navegador ejecutará tu JSON en mi PC y te devolverá "[GottaRemoteMCP Output]" automáticamente en el siguiente mensaje.
 - MUY IMPORTANTE: Cuando recibas el "[GottaRemoteMCP Output]" y ya tengas la información o hayas completado la acción, escribe SIEMPRE tus conclusiones, análisis y respuesta final en lenguaje natural directamente aquí en el chat para mí (sin añadir más bloques JSON).`;
 
 const VALID_ACTIONS = new Set([
@@ -72,9 +72,6 @@ function isValidGottaCommand(parsed) {
   return true;
 }
 
-/**
- * Extrae todos los objetos JSON válidos con {"action": ...} desde cualquier texto.
- */
 function extractGottaObjectsFromText(rawText) {
   const results = [];
   if (!rawText || !rawText.includes('"action"')) return results;
@@ -164,15 +161,72 @@ function findChatEditor() {
   );
 }
 
-function findSendButton() {
-  return (
-    document.querySelector('[data-testid="send-button"]') ||
-    document.querySelector('[data-testid="fruitjuice-send-button"]') ||
-    document.querySelector("button.send-button") ||
-    document.querySelector('form button[aria-label="Send prompt"]') ||
-    document.querySelector('form button[aria-label="Enviar prompt"]') ||
-    document.querySelector('form button[aria-label="Enviar mensaje"]')
-  );
+/**
+ * Localiza el botón azul de enviar (↑) tanto por selectores directos como buscando
+ * el último botón activo dentro del contenedor del compositor de ChatGPT/Gemini.
+ */
+function findSendButton(editorEl) {
+  const directSelectors = [
+    "#composer-submit-button",
+    '[data-testid="send-button"]',
+    '[data-testid="composer-send-button"]',
+    '[data-testid="fruitjuice-send-button"]',
+    "button.send-button",
+    'button[aria-label="Send prompt"]',
+    'button[aria-label="Enviar prompt"]',
+    'button[aria-label="Send message"]',
+    'button[aria-label="Enviar mensaje"]',
+    'button[aria-label*="Send" i]:not([aria-label*="Stop" i])',
+    'button[aria-label*="Enviar" i]',
+  ];
+
+  for (const sel of directSelectors) {
+    const btn = document.querySelector(sel);
+    if (btn && btn.offsetParent !== null && !btn.disabled) {
+      return btn;
+    }
+  }
+
+  // Fallback estructural: subir desde #prompt-textarea hasta encontrar la barra inferior de botones del compositor
+  const editor = editorEl || findChatEditor();
+  if (editor) {
+    let parent = editor.parentElement;
+    for (let depth = 0; depth < 7 && parent; depth++) {
+      const buttons = Array.from(parent.querySelectorAll("button")).filter(
+        (b) => b.offsetParent !== null && !b.disabled
+      );
+      if (buttons.length >= 2) {
+        // El botón de envío (↑) en ChatGPT/Gemini siempre es el último botón a la derecha del compositor
+        const lastBtn = buttons[buttons.length - 1];
+        const label = (
+          (lastBtn.getAttribute("aria-label") || "") +
+          " " +
+          (lastBtn.getAttribute("data-testid") || "")
+        ).toLowerCase();
+        if (!label.includes("voice") && !label.includes("voz") && !label.includes("speech")) {
+          return lastBtn;
+        }
+      }
+      parent = parent.parentElement;
+    }
+  }
+
+  return null;
+}
+
+function triggerFullClick(btn) {
+  const opts = { bubbles: true, cancelable: true, view: window };
+  btn.dispatchEvent(new PointerEvent("pointerdown", opts));
+  btn.dispatchEvent(new MouseEvent("mousedown", opts));
+  btn.dispatchEvent(new PointerEvent("pointerup", opts));
+  btn.dispatchEvent(new MouseEvent("mouseup", opts));
+  btn.click();
+  const form = btn.closest("form");
+  if (form && typeof form.requestSubmit === "function") {
+    try {
+      form.requestSubmit(btn);
+    } catch {}
+  }
 }
 
 function getEditorText(editor) {
@@ -249,21 +303,24 @@ function sendTextToChat(text) {
     }
   }
 
+  // Reintentar clic en el botón azul (↑) hasta que la caja de texto quede vacía (confirmación real de envío)
   let attempts = 0;
   const tryClickSend = () => {
     attempts++;
-    const btn = findSendButton();
-    if (btn && !btn.disabled) {
-      btn.click();
-      setTimeout(() => {
-        isInternalSend = false;
-      }, 300);
+    const currentEditor = findChatEditor() || editor;
+    const remaining = getEditorText(currentEditor);
+
+    if (!remaining) {
+      isInternalSend = false;
+      setLog("✅ Salida enviada al chat. Esperando conclusiones de la IA...", "#10b981");
       return;
     }
-    if (attempts < 5) {
-      setTimeout(tryClickSend, 220);
+
+    const btn = findSendButton(currentEditor);
+    if (btn) {
+      triggerFullClick(btn);
     } else {
-      editor.dispatchEvent(
+      currentEditor.dispatchEvent(
         new KeyboardEvent("keydown", {
           key: "Enter",
           code: "Enter",
@@ -272,19 +329,20 @@ function sendTextToChat(text) {
           bubbles: true,
         })
       );
-      setTimeout(() => {
-        isInternalSend = false;
-      }, 300);
+    }
+
+    if (attempts < 10) {
+      setTimeout(tryClickSend, 300);
+    } else {
+      isInternalSend = false;
+      setLog("⚠️ Texto listo en la caja: pulsa el botón azul (↑) para enviar.", "#fbbf24");
     }
   };
-  setTimeout(tryClickSend, 220);
 
+  setTimeout(tryClickSend, 250);
   return true;
 }
 
-/**
- * Comprueba si el chat actual ya conoce las instrucciones de GottaRemoteMCP.
- */
 function chatAlreadyHasMcpContext() {
   const userMsgs = Array.from(
     document.querySelectorAll('[data-message-author-role="user"], .user-query, user-query')
@@ -298,12 +356,7 @@ function chatAlreadyHasMcpContext() {
   return false;
 }
 
-/**
- * Intercepta automáticamente el primer mensaje que escribe el usuario en cualquier chat
- * para adjuntar el contexto de GottaRemoteMCP de forma transparente sin tener que pegar prompts.
- */
 function setupTransparentAutoContext() {
-  // 1. Al pulsar Enter en la caja de texto del chat
   window.addEventListener(
     "keydown",
     (e) => {
@@ -318,7 +371,6 @@ function setupTransparentAutoContext() {
       if (!userText || userText.includes("GottaRemoteMCP")) return;
       if (chatAlreadyHasMcpContext()) return;
 
-      // Es el primer mensaje del usuario en este chat: inyectamos el contexto MCP automáticamente
       e.preventDefault();
       e.stopImmediatePropagation();
 
@@ -331,15 +383,14 @@ function setupTransparentAutoContext() {
     true
   );
 
-  // 2. Al hacer clic con el ratón en el botón Enviar del chat
   window.addEventListener(
     "mousedown",
     (e) => {
       if (isInternalSend || !autoRun || !currentEndpoint) return;
-      const sendBtn = findSendButton();
+      const editor = findChatEditor();
+      const sendBtn = findSendButton(editor);
       if (!sendBtn || (!sendBtn.contains(e.target) && e.target !== sendBtn)) return;
 
-      const editor = findChatEditor();
       const userText = getEditorText(editor);
       if (!userText || userText.includes("GottaRemoteMCP")) return;
       if (chatAlreadyHasMcpContext()) return;
@@ -428,12 +479,12 @@ function executeGottaPayload(targetEl, parsed) {
         container.appendChild(badge);
       }
 
-      setLog(`✅ Ejecutado (${summary}). Pidiendo conclusiones a la IA...`, "#10b981");
+      setLog(`✅ Ejecutado (${summary}). Enviando salida al chat...`, "#10b981");
       const reply =
         "[GottaRemoteMCP Output]\n```json\n" +
         JSON.stringify(resp.data, null, 2).slice(0, 12000) +
         "\n```\n" +
-        "Instrucción: Si aún necesitas ejecutar otro comando para completar lo que pidió el usuario, responde únicamente con el siguiente bloque ```gotta. Si ya has terminado o ya tienes los datos necesarios, NO escribas más JSON y presenta directamente tus conclusiones, resultados y explicación clara en español aquí en el chat para el usuario.";
+        "Instrucción: Ya tienes aquí arriba la salida real devuelta por el ordenador del usuario. Si necesitas otro comando para terminar, pon otro bloque ```gotta. Si ya tienes el resultado, NO pongas más bloques JSON y responde directamente al usuario explicándole el resultado y tus conclusiones.";
       sendTextToChat(reply);
     }
   );
@@ -601,7 +652,6 @@ function mountWidget() {
     setLog("⚠️ No se encontró ningún comando JSON en la página.", "#fbbf24");
   });
 
-  // Marcar cualquier bloque antiguo que ya estuviera en el historial al abrir la pestaña
   const initialFound = scanAllPageForGottaObjects();
   initialFound.forEach((item) => executedHashes.add(item.raw));
 
