@@ -89,7 +89,12 @@ export async function executeCommander(
   return new Promise((resolve) => {
     const child = spawn("bash", ["-c", wrappedLocalCmd], {
       cwd: startCwd,
-      env: { ...process.env, PAGER: "cat", DEBIAN_FRONTEND: "noninteractive" },
+      env: {
+        ...process.env,
+        DISPLAY: process.env.DISPLAY || ":0",
+        PAGER: "cat",
+        DEBIAN_FRONTEND: "noninteractive",
+      },
     });
 
     const pid = child.pid || Math.floor(Math.random() * 90000 + 10000);
@@ -119,22 +124,10 @@ export async function executeCommander(
       appendOutput(Buffer.from(`[STDERR] ${chunk.toString()}`));
     });
 
-    const timer = setTimeout(() => {
-      if (!finished) {
-        finished = true;
-        resolve({
-          cwd: currentLocalCwd,
-          pid,
-          status: "running_in_background",
-          exitCode: null,
-          output:
-            (session.outputBuffer.trim() || "(Proceso iniciado en segundo plano)") +
-            `\n[INFO] El comando sigue ejecutándose en segundo plano con PID ${pid}. Usa session-output?pid=${pid} para leer más salida o kill?pid=${pid} para detenerlo.`,
-        });
-      }
-    }, timeoutMs);
-
-    child.on("close", async (code) => {
+    const finalizeSession = async (code: number | null) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
       session.status = "exited";
       session.exitCode = code;
 
@@ -150,17 +143,37 @@ export async function executeCommander(
         // Ignorar si el comando no actualizó cwd
       }
 
+      resolve({
+        cwd: currentLocalCwd,
+        pid,
+        status: "completed",
+        exitCode: code,
+        output: session.outputBuffer.trim() || "(Comando completado sin salida)",
+      });
+    };
+
+    const timer = setTimeout(() => {
       if (!finished) {
         finished = true;
-        clearTimeout(timer);
         resolve({
           cwd: currentLocalCwd,
           pid,
-          status: "completed",
-          exitCode: code,
-          output: session.outputBuffer.trim() || "(Comando completado sin salida)",
+          status: "running_in_background",
+          exitCode: null,
+          output:
+            (session.outputBuffer.trim() || "(Proceso iniciado en segundo plano)") +
+            `\n[INFO] El comando sigue ejecutándose en segundo plano con PID ${pid}. Usa session-output?pid=${pid} para leer más salida o kill?pid=${pid} para detenerlo.`,
         });
       }
+    }, timeoutMs);
+
+    child.on("exit", (code) => {
+      // Pequeño margen de 80ms para vaciar buffers stdout/stderr incluso si un subproceso GUI en background hereda descriptores
+      setTimeout(() => finalizeSession(code), 80);
+    });
+
+    child.on("close", (code) => {
+      finalizeSession(code);
     });
 
     child.on("error", (err) => {
