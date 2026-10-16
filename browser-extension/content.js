@@ -1,19 +1,16 @@
-const INITIAL_PROMPT = `Actúa como @remote desktop commander conectado a mi ordenador mediante GottaRemoteMCP.
-IMPORTANTE: No uses tu navegador web integrado ni curl desde tu sandbox. Mi navegador tiene activo el puente automático GottaRemoteMCP que lee tus respuestas y las ejecuta en mi PC.
-
-Cada vez que quieras ejecutar un comando en terminal, abrir programas gráficos, leer/escribir/editar un archivo, listar directorios o controlar el escritorio, responde con un bloque de código \`\`\`gotta (o \`\`\`json) con un objeto JSON válido que contenga la clave "action". Mi puente lo ejecutará automáticamente en mi PC y te enviará la salida en el siguiente mensaje.
-
-Formato de objetos JSON soportados:
-- Ejecutar comando bash (mantiene cwd): {"action": "exec", "cmd": "COMANDO_A_EJECUTAR"}
-- Leer archivo: {"action": "read", "path": "RUTA", "start": 1, "end": 150}
-- Escribir archivo: {"action": "write", "path": "RUTA", "content": "CONTENIDO"}
-- Editar bloque exacto: {"action": "edit", "path": "RUTA", "search": "BUSCAR", "replace": "REEMPLAZAR"}
-- Listar directorio: {"action": "ls", "path": "."}
-- Buscar código: {"action": "search", "q": "PATRON", "path": "."}
-- Sesiones/Procesos: {"action": "sessions"} | {"action": "session-output", "pid": 123} | {"action": "kill", "pid": 123}
-- Escritorio (ratón/teclado): {"action": "input", "type": "click", "x": 500, "y": 300}
-
-Para verificar la conexión ahora mismo, responde únicamente con un bloque JSON que ejecute el comando: pwd && whoami && uname -a`;
+const COMPACT_MCP_CONTEXT = `[GottaRemoteMCP Sistema Activo en mi PC]
+Tienes control directo de mi ordenador mediante el puente de mi navegador.
+- NO uses tu navegador web integrado ni curl desde tu sandbox.
+- Para ejecutar cualquier acción en mi PC, responde ÚNICAMENTE con un bloque de código \`\`\`gotta que contenga un JSON válido:
+  • Comando bash (mantiene cwd): {"action":"exec","cmd":"..."}
+  • Leer archivo: {"action":"read","path":"...","start":1,"end":150}
+  • Escribir archivo: {"action":"write","path":"...","content":"..."}
+  • Editar bloque: {"action":"edit","path":"...","search":"...","replace":"..."}
+  • Listar carpeta: {"action":"ls","path":"."}
+  • Buscar código: {"action":"search","q":"...","path":"."}
+  • Ratón/Teclado: {"action":"input","type":"click","x":500,"y":300}
+- Mi navegador ejecutará tu JSON en mi PC y te devolverá "[GottaRemoteMCP Output]" en el siguiente mensaje.
+- MUY IMPORTANTE: Cuando recibas el "[GottaRemoteMCP Output]" y ya tengas la información o hayas completado la acción, escribe SIEMPRE tus conclusiones, análisis y respuesta final en lenguaje natural directamente aquí en el chat para mí (sin añadir más bloques JSON).`;
 
 const VALID_ACTIONS = new Set([
   "exec",
@@ -30,13 +27,19 @@ const VALID_ACTIONS = new Set([
   "screen",
 ]);
 
-// Ignorar los ejemplos literales del propio prompt de instrucciones
-const IGNORED_EXAMPLE_CMDS = new Set(["pwd && ls -la", "COMANDO_A_EJECUTAR"]);
+const IGNORED_PLACEHOLDERS = new Set([
+  "...",
+  "pwd && ls -la",
+  "COMANDO_A_EJECUTAR",
+  "RUTA",
+  "/ruta/archivo",
+]);
 
 let currentEndpoint = "";
 let autoRun = true;
 let isMinimized = false;
 let isExecuting = false;
+let isInternalSend = false;
 const executedHashes = new Set();
 
 function setLog(text, color = "#d1d5db") {
@@ -54,9 +57,23 @@ function updateWidgetInput() {
   }
 }
 
+function isValidGottaCommand(parsed) {
+  if (!parsed || typeof parsed !== "object" || !VALID_ACTIONS.has(parsed.action)) {
+    return false;
+  }
+  if (parsed.action === "exec") {
+    const cmd = String(parsed.cmd || parsed.command || "").trim();
+    if (!cmd || IGNORED_PLACEHOLDERS.has(cmd)) return false;
+  }
+  if (parsed.action === "read" || parsed.action === "write" || parsed.action === "edit") {
+    const p = String(parsed.path || "").trim();
+    if (!p || IGNORED_PLACEHOLDERS.has(p)) return false;
+  }
+  return true;
+}
+
 /**
- * Extrae todos los objetos JSON válidos con {"action": ...} desde cualquier texto
- * (tanto dentro de cajas </> gotta / CodeMirror / pre / code como en texto plano).
+ * Extrae todos los objetos JSON válidos con {"action": ...} desde cualquier texto.
  */
 function extractGottaObjectsFromText(rawText) {
   const results = [];
@@ -91,14 +108,7 @@ function extractGottaObjectsFromText(rawText) {
             if (candidate.includes('"action"')) {
               try {
                 const parsed = JSON.parse(candidate);
-                if (
-                  parsed &&
-                  typeof parsed === "object" &&
-                  VALID_ACTIONS.has(parsed.action) &&
-                  !IGNORED_EXAMPLE_CMDS.has(parsed.cmd) &&
-                  parsed.path !== "RUTA" &&
-                  parsed.path !== "/ruta/archivo"
-                ) {
+                if (isValidGottaCommand(parsed)) {
                   results.push({ raw: candidate, parsed });
                   start = i;
                 }
@@ -128,7 +138,6 @@ function isUserElement(el) {
   }
   const article = el.closest("article");
   if (article && article.querySelector('[data-message-author-role="user"]')) {
-    // Si el article solo tiene mensaje de usuario y no de assistant
     if (!article.querySelector('[data-message-author-role="assistant"]')) {
       return true;
     }
@@ -136,9 +145,6 @@ function isUserElement(el) {
   return false;
 }
 
-/**
- * Busca todos los contenedores de respuesta o bloques de código del asistente en la página.
- */
 function findCandidateBlocks() {
   const candidates = Array.from(
     document.querySelectorAll(
@@ -169,13 +175,23 @@ function findSendButton() {
   );
 }
 
+function getEditorText(editor) {
+  if (!editor) return "";
+  if (editor.tagName === "TEXTAREA" || editor.tagName === "INPUT") {
+    return (editor.value || "").trim();
+  }
+  return (editor.innerText || editor.textContent || "").trim();
+}
+
 function sendTextToChat(text) {
+  isInternalSend = true;
   try {
     navigator.clipboard.writeText(text).catch(() => {});
   } catch {}
 
   const editor = findChatEditor();
   if (!editor) {
+    isInternalSend = false;
     setLog(
       "⚠️ No se encontró la caja del chat. Respuesta copiada al portapapeles (Ctrl+V).",
       "#fbbf24"
@@ -197,7 +213,6 @@ function sendTextToChat(text) {
     }
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   } else {
-    // Seleccionar todo el contenido actual del editor ProseMirror / Quill e insertar con execCommand
     const sel = window.getSelection();
     const range = document.createRange();
     range.selectNodeContents(editor);
@@ -234,18 +249,19 @@ function sendTextToChat(text) {
     }
   }
 
-  // Intentar pulsar el botón de envío tras habilitarse en React/ProseMirror
   let attempts = 0;
   const tryClickSend = () => {
     attempts++;
     const btn = findSendButton();
     if (btn && !btn.disabled) {
       btn.click();
-      setLog("✅ Respuesta enviada al chat automáticamente.", "#10b981");
+      setTimeout(() => {
+        isInternalSend = false;
+      }, 300);
       return;
     }
-    if (attempts < 4) {
-      setTimeout(tryClickSend, 250);
+    if (attempts < 5) {
+      setTimeout(tryClickSend, 220);
     } else {
       editor.dispatchEvent(
         new KeyboardEvent("keydown", {
@@ -256,12 +272,89 @@ function sendTextToChat(text) {
           bubbles: true,
         })
       );
-      setLog("✅ Respuesta insertada en la caja del chat (pulsa Enter si no salió).", "#10b981");
+      setTimeout(() => {
+        isInternalSend = false;
+      }, 300);
     }
   };
-  setTimeout(tryClickSend, 250);
+  setTimeout(tryClickSend, 220);
 
   return true;
+}
+
+/**
+ * Comprueba si el chat actual ya conoce las instrucciones de GottaRemoteMCP.
+ */
+function chatAlreadyHasMcpContext() {
+  const userMsgs = Array.from(
+    document.querySelectorAll('[data-message-author-role="user"], .user-query, user-query')
+  );
+  for (const m of userMsgs) {
+    const t = m.textContent || "";
+    if (t.includes("GottaRemoteMCP") || t.includes("```gotta")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Intercepta automáticamente el primer mensaje que escribe el usuario en cualquier chat
+ * para adjuntar el contexto de GottaRemoteMCP de forma transparente sin tener que pegar prompts.
+ */
+function setupTransparentAutoContext() {
+  // 1. Al pulsar Enter en la caja de texto del chat
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (isInternalSend || !autoRun || !currentEndpoint) return;
+      if (e.key !== "Enter" || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.isComposing) {
+        return;
+      }
+      const editor = findChatEditor();
+      if (!editor || (!editor.contains(e.target) && e.target !== editor)) return;
+
+      const userText = getEditorText(editor);
+      if (!userText || userText.includes("GottaRemoteMCP")) return;
+      if (chatAlreadyHasMcpContext()) return;
+
+      // Es el primer mensaje del usuario en este chat: inyectamos el contexto MCP automáticamente
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      const existing = scanAllPageForGottaObjects();
+      existing.forEach((item) => executedHashes.add(item.raw));
+
+      setLog("🚀 Conectando tu mensaje con GottaRemoteMCP...", "#60a5fa");
+      sendTextToChat(`${userText}\n\n${COMPACT_MCP_CONTEXT}`);
+    },
+    true
+  );
+
+  // 2. Al hacer clic con el ratón en el botón Enviar del chat
+  window.addEventListener(
+    "mousedown",
+    (e) => {
+      if (isInternalSend || !autoRun || !currentEndpoint) return;
+      const sendBtn = findSendButton();
+      if (!sendBtn || (!sendBtn.contains(e.target) && e.target !== sendBtn)) return;
+
+      const editor = findChatEditor();
+      const userText = getEditorText(editor);
+      if (!userText || userText.includes("GottaRemoteMCP")) return;
+      if (chatAlreadyHasMcpContext()) return;
+
+      e.preventDefault();
+      e.stopImmediatePropagation();
+
+      const existing = scanAllPageForGottaObjects();
+      existing.forEach((item) => executedHashes.add(item.raw));
+
+      setLog("🚀 Conectando tu mensaje con GottaRemoteMCP...", "#60a5fa");
+      sendTextToChat(`${userText}\n\n${COMPACT_MCP_CONTEXT}`);
+    },
+    true
+  );
 }
 
 function getCleanElementText(el) {
@@ -271,7 +364,7 @@ function getCleanElementText(el) {
 }
 
 function pingServer(callback) {
-  setLog("🔄 Probando conexión con GottaRemoteMCP...", "#60a5fa");
+  setLog("🔄 Conectando con tu PC...", "#60a5fa");
   chrome.runtime.sendMessage(
     { type: "GOTTA_PING", endpoint: currentEndpoint },
     (resp) => {
@@ -292,13 +385,13 @@ function pingServer(callback) {
       const st = resp.data?.status || {};
       const host = st.hostname || st.host || "PC";
       const cwd = st.cwd || resp.data?.cwd || "~";
-      setLog(`✅ Conectado a ${host} (${cwd})`, "#10b981");
+      setLog(`✅ Listo en ${host} (${cwd}) — Solo escribe en el chat`, "#10b981");
       if (callback) callback(true);
     }
   );
 }
 
-function executeGottaPayload(targetEl, parsed, rawJson) {
+function executeGottaPayload(targetEl, parsed) {
   if (isExecuting) return;
   isExecuting = true;
 
@@ -314,7 +407,9 @@ function executeGottaPayload(targetEl, parsed, rawJson) {
       if (!resp || !resp.ok) {
         const errMsg = resp?.error || "Error de conexión con GottaRemoteMCP";
         setLog(`❌ Error: ${errMsg}`, "#f87171");
-        sendTextToChat(`[GottaRemoteMCP Error] ${errMsg}`);
+        sendTextToChat(
+          `[GottaRemoteMCP Error]\n${errMsg}\n\nExplica el problema al usuario en el chat o intenta un comando alternativo.`
+        );
         return;
       }
 
@@ -333,11 +428,12 @@ function executeGottaPayload(targetEl, parsed, rawJson) {
         container.appendChild(badge);
       }
 
-      setLog(`✅ Ejecutado (${summary}). Enviando salida al chat...`, "#10b981");
+      setLog(`✅ Ejecutado (${summary}). Pidiendo conclusiones a la IA...`, "#10b981");
       const reply =
         "[GottaRemoteMCP Output]\n```json\n" +
         JSON.stringify(resp.data, null, 2).slice(0, 12000) +
-        "\n```";
+        "\n```\n" +
+        "Instrucción: Si aún necesitas ejecutar otro comando para completar lo que pidió el usuario, responde únicamente con el siguiente bloque ```gotta. Si ya has terminado o ya tienes los datos necesarios, NO escribas más JSON y presenta directamente tus conclusiones, resultados y explicación clara en español aquí en el chat para el usuario.";
       sendTextToChat(reply);
     }
   );
@@ -424,7 +520,7 @@ function mountWidget() {
   const box = document.createElement("div");
   box.id = "gotta-remote-ext-widget";
   box.style.cssText =
-    "position:fixed;top:16px;right:18px;z-index:999999;background:#111827;color:#f9fafb;padding:10px 12px;border-radius:12px;border:1px solid #10b981;font-family:system-ui,sans-serif;font-size:12px;box-shadow:0 10px 25px rgba(0,0,0,0.55);display:flex;flex-direction:column;gap:7px;width:290px;user-select:none;";
+    "position:fixed;top:16px;right:18px;z-index:999999;background:#111827;color:#f9fafb;padding:10px 12px;border-radius:12px;border:1px solid #10b981;font-family:system-ui,sans-serif;font-size:12px;box-shadow:0 10px 25px rgba(0,0,0,0.55);display:flex;flex-direction:column;gap:7px;width:280px;user-select:none;";
   box.innerHTML = `
     <div id="gotta-drag-handle" title="Arrastra desde aquí para mover el cuadro" style="display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:move;padding-bottom:4px;border-bottom:1px solid #1f2937;">
       <span style="font-weight:700;color:#10b981;display:flex;align-items:center;gap:5px;">
@@ -432,7 +528,7 @@ function mountWidget() {
       </span>
       <div style="display:flex;align-items:center;gap:6px;">
         <label style="cursor:pointer;display:flex;align-items:center;gap:3px;font-size:11px;">
-          <input type="checkbox" id="gotta-ext-autorun" checked /> Auto
+          <input type="checkbox" id="gotta-ext-autorun" checked /> Activo
         </label>
         <button id="gotta-ext-min-btn" title="Minimizar / Expandir" style="background:#1f2937;color:#9ca3af;border:none;border-radius:4px;padding:1px 6px;font-size:12px;cursor:pointer;">
           —
@@ -442,21 +538,16 @@ function mountWidget() {
     <div id="gotta-ext-body" style="display:flex;flex-direction:column;gap:7px;">
       <div style="display:flex;gap:5px;">
         <input id="gotta-ep-input" type="text" placeholder="http://localhost:3000/c/user/pass" style="background:#1f2937;color:#fff;border:1px solid #374151;border-radius:6px;padding:5px 7px;font-size:11px;flex:1;min-width:0;" />
-        <button id="gotta-ext-ping-btn" title="Probar conexión con tu PC" style="background:#374151;color:#f9fafb;border:none;border-radius:6px;padding:5px 7px;font-size:11px;cursor:pointer;white-space:nowrap;">
-          🔍 Probar
+        <button id="gotta-ext-ping-btn" title="Sincronizar o probar conexión con tu PC" style="background:#374151;color:#f9fafb;border:none;border-radius:6px;padding:5px 7px;font-size:11px;cursor:pointer;white-space:nowrap;">
+          🔄 Sync
         </button>
       </div>
       <div id="gotta-ext-status-log" style="background:#030712;border:1px solid #1f2937;border-radius:6px;padding:6px 8px;font-size:11px;color:#9ca3af;min-height:16px;line-height:1.35;word-break:break-word;user-select:text;">
-        ⚪ Listo para conectar
+        ⚪ Conectando...
       </div>
-      <div style="display:flex;gap:5px;">
-        <button id="gotta-ext-init-btn" style="flex:1;background:#10b981;color:#06281e;border:none;border-radius:6px;padding:7px 8px;font-weight:700;font-size:11px;cursor:pointer;">
-          🚀 Conectar Chat
-        </button>
-        <button id="gotta-ext-runlast-btn" title="Ejecutar ahora mismo el último comando JSON que aparece en el chat" style="background:#2563eb;color:#fff;border:none;border-radius:6px;padding:7px 8px;font-weight:600;font-size:11px;cursor:pointer;white-space:nowrap;">
-          ▶️ Ejecutar último
-        </button>
-      </div>
+      <button id="gotta-ext-runlast-btn" title="Re-ejecutar manualmente el último comando JSON del chat" style="background:#1f2937;color:#d1d5db;border:1px solid #374151;border-radius:6px;padding:5px 8px;font-weight:600;font-size:11px;cursor:pointer;">
+        ▶️ Ejecutar último JSON del chat
+      </button>
     </div>
   `;
   document.body.appendChild(box);
@@ -472,6 +563,12 @@ function mountWidget() {
 
   document.getElementById("gotta-ext-autorun").addEventListener("change", (e) => {
     autoRun = e.target.checked;
+    setLog(
+      autoRun
+        ? "✅ Puente activo — Escribe directamente en el chat"
+        : "⏸️ Puente en pausa",
+      autoRun ? "#10b981" : "#9ca3af"
+    );
   });
 
   document.getElementById("gotta-ext-min-btn").addEventListener("click", () => {
@@ -480,11 +577,11 @@ function mountWidget() {
     const minBtn = document.getElementById("gotta-ext-min-btn");
     if (isMinimized) {
       bodyEl.style.display = "none";
-      box.style.width = "190px";
+      box.style.width = "185px";
       minBtn.textContent = "+";
     } else {
       bodyEl.style.display = "flex";
-      box.style.width = "290px";
+      box.style.width = "280px";
       minBtn.textContent = "—";
     }
   });
@@ -493,29 +590,25 @@ function mountWidget() {
     pingServer();
   });
 
-  document.getElementById("gotta-ext-init-btn").addEventListener("click", () => {
-    const existing = scanAllPageForGottaObjects();
-    existing.forEach((item) => executedHashes.add(item.raw));
-    pingServer((ok) => {
-      if (!ok) return;
-      setLog("📨 Insertando prompt en el chat...", "#60a5fa");
-      sendTextToChat(INITIAL_PROMPT);
-    });
-  });
-
   document.getElementById("gotta-ext-runlast-btn").addEventListener("click", () => {
     const found = scanAllPageForGottaObjects();
     if (found.length > 0) {
       const last = found[found.length - 1];
       executedHashes.add(last.raw);
-      executeGottaPayload(last.el, last.parsed, last.raw);
+      executeGottaPayload(last.el, last.parsed);
       return;
     }
     setLog("⚠️ No se encontró ningún comando JSON en la página.", "#fbbf24");
   });
 
-  setTimeout(() => pingServer(), 400);
+  // Marcar cualquier bloque antiguo que ya estuviera en el historial al abrir la pestaña
+  const initialFound = scanAllPageForGottaObjects();
+  initialFound.forEach((item) => executedHashes.add(item.raw));
+
+  setTimeout(() => pingServer(), 300);
 }
+
+setupTransparentAutoContext();
 
 chrome.storage.local.get(["gottaEndpoint"], (res) => {
   if (res.gottaEndpoint) {
@@ -546,11 +639,9 @@ setInterval(() => {
   const found = scanAllPageForGottaObjects();
   if (found.length === 0) return;
 
-  // Ejecutar cualquier comando nuevo que no haya sido ejecutado aún en esta sesión
   const last = found[found.length - 1];
   if (!executedHashes.has(last.raw)) {
-    // Marcar los anteriores como vistos para ejecutar solo el último turno pendiente
     found.forEach((item) => executedHashes.add(item.raw));
-    executeGottaPayload(last.el, last.parsed, last.raw);
+    executeGottaPayload(last.el, last.parsed);
   }
-}, 900);
+}, 800);

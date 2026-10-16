@@ -5,48 +5,7 @@ IMPORTANTE: No intentes usar tu navegador web integrado ni curl desde tu sandbox
 En su lugar, mi navegador tiene activo el puente automático GottaRemoteMCP que lee tus respuestas.
 
 Cada vez que quieras ejecutar un comando, leer/escribir/editar un archivo, buscar código o controlar el escritorio, incluye en tu respuesta un bloque de código con el lenguaje \`\`\`gotta y un JSON válido dentro. Mi puente lo ejecutará automáticamente en mi PC y te enviará la salida en el siguiente mensaje.
-
-Formato de acciones soportadas dentro de \`\`\`gotta:
-1. Ejecutar comando bash (mantiene el directorio actual cd):
-\`\`\`gotta
-{"action": "exec", "cmd": "pwd && ls -la"}
-\`\`\`
-2. Leer archivo (con rango de líneas opcional):
-\`\`\`gotta
-{"action": "read", "path": "/ruta/archivo", "start": 1, "end": 150}
-\`\`\`
-3. Escribir archivo completo:
-\`\`\`gotta
-{"action": "write", "path": "/ruta/archivo", "content": "contenido..."}
-\`\`\`
-4. Editar bloque exacto en un archivo (search & replace sin reescribir todo):
-\`\`\`gotta
-{"action": "edit", "path": "/ruta/archivo", "search": "texto original", "replace": "texto nuevo"}
-\`\`\`
-5. Listar directorio:
-\`\`\`gotta
-{"action": "ls", "path": "."}
-\`\`\`
-6. Buscar en código (ripgrep/grep):
-\`\`\`gotta
-{"action": "search", "q": "patron", "path": "."}
-\`\`\`
-7. Sesiones en segundo plano y procesos:
-\`\`\`gotta
-{"action": "sessions"}
-\`\`\`
-\`\`\`gotta
-{"action": "session-output", "pid": 12345}
-\`\`\`
-\`\`\`gotta
-{"action": "kill", "pid": 12345}
-\`\`\`
-8. Ratón y teclado en el escritorio:
-\`\`\`gotta
-{"action": "input", "type": "click", "x": 500, "y": 300}
-\`\`\`
-
-Empecemos: responde ahora únicamente con un bloque \`\`\`gotta ejecutando "pwd && whoami && uname -a" para confirmar que tienes control del sistema.`;
+Cuando recibas el "[GottaRemoteMCP Output]" y ya tengas la información o hayas completado la tarea, escribe SIEMPRE tus conclusiones, análisis y respuesta final directamente en el chat (sin añadir más bloques JSON).`;
 
 export function registerUserscriptBridge(
   app: express.Application,
