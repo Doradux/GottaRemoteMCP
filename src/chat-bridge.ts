@@ -13,6 +13,7 @@ import {
 } from "./commander.js";
 import { captureScreenBase64, performDesktopInput } from "./desktop.js";
 import { listProcesses, listRemoteOrLocalDirectory, writeRemoteOrLocalFile } from "./files.js";
+import { GOTTA_CHAT_SYSTEM_PROMPT } from "./browser-bridge.js";
 
 function escapeHtml(text: string): string {
   return text
@@ -53,47 +54,44 @@ function renderBotHtmlPage(title: string, bodyText: string, baseUrl: string, ext
 </html>`;
 }
 
-export function buildChatPromptBlock(publicOrLocalUrl: string, user: string, pass: string): string {
-  const base = `${publicOrLocalUrl}/c/${user}/${pass}`;
+export function buildChatPromptBlock(
+  publicOrLocalUrl: string,
+  localUrl: string,
+  user: string,
+  pass: string
+): string {
+  const publicBase = `${publicOrLocalUrl}/c/${user}/${pass}`;
+  const localBase = `${localUrl}/c/${user}/${pass}`;
   return `
 ================================================================================
-  CREDENCIALES GENERADAS (MODO SIN API - CHAT NORMAL CHATGPT / GEMINI / AGENTES)
+  CREDENCIALES GENERADAS (MODO SIN API - CHATGPT / GEMINI / AGENTES)
 ================================================================================
-  Host / Tunnel : ${publicOrLocalUrl}
-  Usuario       : ${user}
-  Password/Key  : ${pass}
-  Endpoint Base : ${base}
+  Usuario         : ${user}
+  Password/Key    : ${pass}
+  Endpoint Local  : ${localBase}
+  Endpoint Tunel  : ${publicBase}
+  Userscript URL  : ${localBase}/gotta.user.js
 --------------------------------------------------------------------------------
-  COPIA Y PEGA EL SIGUIENTE BLOQUE EN UN CHAT NORMAL DE CHATGPT O GEMINI:
+  COMO CONECTAR UN CHAT NORMAL DE CHATGPT O GEMINI (SALTANDO SU BLOQUEO DE RED):
+  (ChatGPT bloquea en su servidor salida DNS/curl y dominios trycloudflare.com.
+   Por eso incluimos el Puente de Navegador que ejecuta las órdenes desde tu
+   propio navegador sin API keys y sin que OpenAI pueda bloquearlo):
+
+  1. En Chrome/Brave/Edge abre: chrome://extensions
+  2. Activa "Modo de desarrollador" -> "Cargar descomprimida" y selecciona:
+     /home/marcos/GottaRemoteMCP/browser-extension
+     (O si usas Tampermonkey, abre: ${localBase}/gotta.user.js)
+  3. Abre https://chatgpt.com o https://gemini.google.com:
+     Verás abajo a la derecha el widget verde "GottaRemoteMCP Bridge".
+     Pega ahí la URL de Control:
+     ${localBase}   (si el navegador está en este mismo PC)
+     o ${publicBase} (si estás en otro dispositivo)
+  4. Pulsa el botón verde "🚀 Conectar este Chat con mi PC" (o pega el bloque
+     de abajo en el chat).
 --------------------------------------------------------------------------------
-Conéctate a mi ordenador como @remote desktop commander usando estas credenciales directas:
-- URL de Control: ${base}
-- Usuario: ${user}
-- Clave: ${pass}
-
-No necesitas API key ni plugins externos. Puedes controlar mi PC abriendo directamente estas URLs con tu navegador web integrado (o vía curl si tienes terminal), añadiendo siempre un parámetro &_t=<numero_aleatorio> al final para evitar caché:
-
-1. Estado e inicio: ${base}?_t=1
-2. Ejecutar comando bash (mantiene el directorio actual cd):
-   ${base}/exec?cmd=ls+-la&_t=1
-   (También puedes pasar comandos complejos en Base64: ${base}/exec?b64=<COMANDO_EN_BASE64>&_t=1)
-3. Leer archivo (con líneas opcionales):
-   ${base}/read?path=/ruta/archivo&start=1&end=200&_t=1
-4. Escribir archivo:
-   ${base}/write?path=/ruta/archivo&content=TEXTO_URL_ENCODED&_t=1
-   (O en Base64: ${base}/write?path=/ruta/archivo&b64=<CONTENIDO_BASE64>&_t=1)
-5. Editar bloque exacto en archivo (search & replace):
-   ${base}/edit?path=/ruta/archivo&search=TEXTO_VIEJO&replace=TEXTO_NUEVO&_t=1
-6. Listar directorio:
-   ${base}/ls?path=.&_t=1
-7. Buscar texto/código (ripgrep/grep):
-   ${base}/search?q=PATRON&path=.&_t=1
-8. Ver procesos o sesiones en segundo plano:
-   ${base}/sessions&_t=1  |  ${base}/session-output?pid=PID&_t=1  |  ${base}/kill?pid=PID&_t=1
-9. Controlar ratón/teclado y ver pantalla:
-   ${base}/input?action=click&x=500&y=300&_t=1  |  ${base}/screen?_t=1
-
-Haz una primera petición a ${base}?_t=1 para verificar la conexión y dime en qué directorio estamos.
+  PROMPT PARA CHAT NORMAL (CON PUENTE DE NAVEGADOR ACTIVO):
+--------------------------------------------------------------------------------
+${GOTTA_CHAT_SYSTEM_PROMPT}
 ================================================================================
 `;
 }
@@ -103,7 +101,6 @@ export function registerNormalChatBridge(
   getCredentials: () => { user: string; pass: string; getBaseUrl: (req: express.Request) => string },
   getSystemStatusFn: () => Promise<Record<string, any>>
 ) {
-  // Permitir explícitamente los bots de navegación de ChatGPT y Gemini en chats normales
   app.get("/robots.txt", (_req, res) => {
     res.type("text/plain").send(
       `User-agent: ChatGPT-User
@@ -159,7 +156,6 @@ Allow: /
       .send(renderBotHtmlPage(title, textSummary, fullBase, extraHtml));
   };
 
-  // 1. Panel principal de estado
   router.get("/", async (req, res) => {
     try {
       const status = await getSystemStatusFn();
@@ -171,7 +167,6 @@ Allow: /
     }
   });
 
-  // 2. Ejecutar comando (GET o POST) con soporte cmd=... o b64=...
   const handleExec = async (req: express.Request, res: express.Response) => {
     try {
       const b64 = (req.query.b64 || req.body?.b64) as string | undefined;
@@ -190,7 +185,12 @@ Allow: /
       }
 
       const cwd = (req.query.cwd || req.body?.cwd) as string | undefined;
-      const timeoutMs = req.query.timeout ? Number(req.query.timeout) : undefined;
+      const timeoutMs =
+        req.query.timeout !== undefined
+          ? Number(req.query.timeout)
+          : req.body?.timeout !== undefined
+            ? Number(req.body.timeout)
+            : undefined;
       const result = await executeCommander(command, { cwd, timeoutMs });
       const textOut = `$ ${command}\n[Status: ${result.status} | ExitCode: ${result.exitCode ?? "running"} | PID: ${result.pid ?? "-"} | CWD: ${result.cwd}]\n\n${result.output}`;
       sendResponse(req, res, `Command: ${command}`, { success: true, ...result }, textOut);
@@ -201,7 +201,6 @@ Allow: /
   router.get("/exec", handleExec);
   router.post("/exec", handleExec);
 
-  // 3. Listar directorio
   router.get("/ls", async (req, res) => {
     try {
       const targetPath = path.resolve(getCurrentCwd(), String(req.query.path || "."));
@@ -221,7 +220,6 @@ Allow: /
     }
   });
 
-  // 4. Leer archivo (con soporte de líneas start/end)
   router.get("/read", async (req, res) => {
     try {
       const filePath = String(req.query.path || "");
@@ -240,7 +238,6 @@ Allow: /
     }
   });
 
-  // 5. Escribir archivo (GET o POST, soporta content=..., b64=..., append=1)
   const handleWrite = async (req: express.Request, res: express.Response) => {
     try {
       const rawPath = String(req.query.path || req.body?.path || "");
@@ -267,7 +264,6 @@ Allow: /
   router.get("/write", handleWrite);
   router.post("/write", handleWrite);
 
-  // 6. Edición quirúrgica de bloque (search & replace)
   const handleEdit = async (req: express.Request, res: express.Response) => {
     try {
       const filePath = String(req.query.path || req.body?.path || "");
@@ -289,7 +285,6 @@ Allow: /
   router.get("/edit", handleEdit);
   router.post("/edit", handleEdit);
 
-  // 7. Buscar en código (ripgrep / grep)
   router.get("/search", async (req, res) => {
     try {
       const q = String(req.query.q || "");
@@ -301,7 +296,6 @@ Allow: /
     }
   });
 
-  // 8. Sesiones en segundo plano y gestión de procesos
   router.get("/sessions", async (req, res) => {
     const sessions = listActiveSessions();
     const procs = await listProcesses();
@@ -340,7 +334,6 @@ Allow: /
     }
   });
 
-  // 9. Control de ratón y teclado por URL GET
   router.get("/input", async (req, res) => {
     try {
       const action = String(req.query.action || "click");
@@ -357,7 +350,6 @@ Allow: /
     }
   });
 
-  // 10. Captura de pantalla (HTML con imagen embebida y ruta PNG directa)
   router.get("/screen.png", async (_req, res) => {
     try {
       const b64 = await captureScreenBase64();

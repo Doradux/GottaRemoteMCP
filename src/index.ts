@@ -29,6 +29,7 @@ import {
   terminateProcessOrSession,
 } from "./commander.js";
 import { buildChatPromptBlock, registerNormalChatBridge } from "./chat-bridge.js";
+import { registerUserscriptBridge } from "./browser-bridge.js";
 import { startQuickTunnel } from "./tunnel.js";
 
 dotenv.config();
@@ -406,16 +407,14 @@ function getEffectiveBaseUrl(req: express.Request): string {
   return `${proto}://${req.get("host")}`;
 }
 
-// Registrar puente directo para chats normales (/c/:user/:pass/*) sin necesidad de API Keys
-registerNormalChatBridge(
-  app,
-  () => ({
-    user: CHAT_USER,
-    pass: CHAT_PASS,
-    getBaseUrl: getEffectiveBaseUrl,
-  }),
-  () => getSystemStatus()
-);
+const getBridgeCreds = () => ({
+  user: CHAT_USER,
+  pass: CHAT_PASS,
+  getBaseUrl: getEffectiveBaseUrl,
+});
+
+registerUserscriptBridge(app, getBridgeCreds);
+registerNormalChatBridge(app, getBridgeCreds, () => getSystemStatus());
 
 function verifyAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
@@ -527,7 +526,7 @@ async function main() {
     }
 
     const activeUrl = publicTunnelUrl || localUrl;
-    console.log(buildChatPromptBlock(activeUrl, CHAT_USER, CHAT_PASS));
+    console.log(buildChatPromptBlock(activeUrl, localUrl, CHAT_USER, CHAT_PASS));
   });
 }
 

@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "GottaRemoteMCP Chat Bridge",
+  "version": "0.4.0",
+  "description": "Conecta cualquier chat normal de ChatGPT o Gemini con GottaRemoteMCP pasando únicamente la URL de credenciales generada en bash.",
+  "permissions": ["storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*",
+        "https://chat.openai.com/*",
+        "https://gemini.google.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
